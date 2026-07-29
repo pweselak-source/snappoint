@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="pl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>snapPoint — dokumenty formalne</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Nawigacja główna">
+        <div class="sidebar-brand">
+          <a href="#" class="brand-mark" aria-label="snapPoint">
+            snappoint<span class="dot">.</span>
+          </a>
+          <p class="brand-sub">Dokumenty formalne projektu</p>
+        </div>
+
+        <nav class="sidebar-nav">
+          <p class="nav-label">Workspace</p>
+          <a class="nav-item is-active" href="#" data-view="dashboard">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z" />
+              </svg>
+            </span>
+            Pulpit
+          </a>
+          <a class="nav-item" href="#" data-view="building-projects">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M8 4h7l3 3v13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
+                <path d="M15 4v3h3M9 12h6M9 16h4" />
+              </svg>
+            </span>
+            Projekty budowlane
+          </a>
+          <a class="nav-item" href="#" data-view="docs-to-submit">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M7 4h10a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
+                <path d="M9 9h6M9 13h6M9 17h3" />
+              </svg>
+            </span>
+            Dokumenty do złożenia
+          </a>
+          <a class="nav-item" href="#" data-view="zalaczniki">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M15.5 7.5 9.2 13.8a2.5 2.5 0 1 0 3.5 3.5l7.1-7.1a4 4 0 0 0-5.7-5.7L7 11.6" />
+              </svg>
+            </span>
+            Załączniki
+          </a>
+
+          <p class="nav-label">Narzędzia</p>
+          <a class="nav-item is-disabled" href="#" data-view="checklist" aria-disabled="true" tabindex="-1">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M9 6h11M9 12h11M9 18h11M5 6.5l1 1 2-2M5 12.5l1 1 2-2M5 18.5l1 1 2-2" />
+              </svg>
+            </span>
+            Checklista formalna
+          </a>
+        </nav>
+
+        <div class="sidebar-footer">
+          <p class="powered-by">
+            Powered by
+            <span class="adapto-mark">adapto<span class="dot">.</span></span>
+          </p>
+        </div>
+      </aside>
+
+      <div class="main-column">
+        <header class="topbar">
+          <div class="topbar-left">
+            <button class="icon-btn mobile-only" id="menuToggle" type="button" aria-label="Otwórz menu">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                <path d="M4 7h16M4 12h16M4 17h16" />
+              </svg>
+            </button>
+            <div class="breadcrumb">
+              <span class="crumb-muted">Workspace</span>
+              <span class="crumb-sep">/</span>
+              <span class="crumb-current" id="pageTitle">Pulpit</span>
+            </div>
+          </div>
+
+          <div class="topbar-right">
+            <div class="search">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5" />
+                <path d="m16 16 3.5 3.5" />
+              </svg>
+              <input type="search" placeholder="Szukaj dokumentu lub projektu…" />
+            </div>
+            <button class="ghost-btn" type="button">Eksport</button>
+            <button class="primary-btn" type="button">Nowy dokument</button>
+            <div class="avatar" title="Architekt">AK</div>
+          </div>
+        </header>
+
+        <main class="content" id="content">
+          <section class="hero-panel create-panel">
+            <button class="create-project" type="button" data-view="new-project">
+              <span class="create-visual" aria-hidden="true">
+                <span class="orb orb-a"></span>
+                <span class="orb orb-b"></span>
+                <span class="plus-mark">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                </span>
+              </span>
+              <span class="create-copy">
+                <span class="eyebrow">Nowy start</span>
+                <span class="create-title">
+                  Stwórz nowy
+                  <span class="gradient-text">projekt budowlany</span>
+                </span>
+                <span class="lede">
+                  Tutaj stworzysz formalny projekt budowlany spełniający
+                  <strong>100% urzędowych wymagań</strong>.
+                </span>
+              </span>
+            </button>
+            <button type="button" class="ghost-btn clear-mock-btn" data-role="clear-mock-data">
+              Wyczyść dane mockupu
+            </button>
+          </section>
+
+          <section class="stats-row">
+            <article class="stat">
+              <p class="stat-value">3</p>
+              <p class="stat-label">Aktywne projekty</p>
+            </article>
+            <article class="stat">
+              <p class="stat-value">12</p>
+              <p class="stat-label">Dokumenty w toku</p>
+            </article>
+            <article class="stat">
+              <p class="stat-value">86%</p>
+              <p class="stat-label">Kompletność formalna</p>
+            </article>
+            <article class="stat">
+              <p class="stat-value">2</p>
+              <p class="stat-label">Do uzupełnienia dziś</p>
+            </article>
+          </section>
+
+          <section class="grid-two">
+            <article class="panel recent-projects-panel">
+              <div class="panel-head">
+                <h2>Ostatnie projekty</h2>
+                <a href="#" class="text-link">Zobacz wszystkie</a>
+              </div>
+              <div class="recent-projects-body" id="recentProjectsBody">
+                <div class="projects-watermark">
+                  <div class="watermark-visual" aria-hidden="true">
+                    <div class="orb orb-a"></div>
+                    <div class="orb orb-b"></div>
+                    <div class="doc-stack">
+                      <div class="doc-sheet s1"></div>
+                      <div class="doc-sheet s2"></div>
+                      <div class="doc-sheet s3">
+                        <span></span><span></span><span></span>
+                      </div>
+                    </div>
+                  </div>
+                  <p class="watermark-title">Brak zapisanych projektów</p>
+                  <p class="watermark-hint">Stwórz pierwszy projekt budowlany powyżej</p>
+                </div>
+              </div>
+            </article>
+
+            <aside class="ai-chat dashboard-chat" aria-label="Asystent AI">
+              <header class="ai-chat-head">
+                <div>
+                  <p class="ai-chat-kicker">Asystent</p>
+                  <h2>snapPoint AI</h2>
+                </div>
+                <span class="ai-chat-badge">Demo</span>
+              </header>
+              <div class="ai-chat-messages" id="aiChatMessages"></div>
+              <form class="ai-chat-composer" id="aiChatForm">
+                <input
+                  id="aiChatInput"
+                  type="text"
+                  placeholder="Zapytaj asystenta o projekt…"
+                  autocomplete="off"
+                />
+                <button class="primary-btn ai-send" type="submit">Wyślij</button>
+              </form>
+            </aside>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
+    <script src="survey-engine.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
