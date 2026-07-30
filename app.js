@@ -3,7 +3,7 @@ const titles = {
   "new-project": "Nowy projekt",
   "project-detail": "Projekt",
   projects: "Projekty",
-  "building-projects": "Projekty budowlane",
+  "building-projects": "Dokument projektu bud.",
   "docs-to-submit": "Dokumenty do złożenia",
   zalaczniki: "Załączniki",
   checklist: "Checklista formalna",
@@ -322,6 +322,7 @@ function ensureCategoryModal() {
     closeCategoryModal();
     updateFilesUi();
     showTypeToast(label);
+    if (typeof notifyTutorial === "function") notifyTutorial("category");
   });
 
   return modal;
@@ -579,6 +580,7 @@ function addFiles(fileList) {
     });
   });
   updateFilesUi();
+  if (typeof notifyTutorial === "function") notifyTutorial("files");
 }
 
 function autofillProjectForm() {
@@ -597,6 +599,7 @@ function bindNewProjectForm() {
   autofillBtn?.addEventListener("click", () => {
     autofillProjectForm();
     autofillBtn.classList.add("is-used");
+    if (typeof notifyTutorial === "function") notifyTutorial("autofill");
   });
 
   form?.querySelectorAll("[data-view]").forEach((el) => {
@@ -631,6 +634,10 @@ function bindNewProjectForm() {
 
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (typeof isTutorialBlockingSave === "function" && isTutorialBlockingSave()) {
+      showTypeToast("W tutorialu zapis jest na razie wyłączony");
+      return;
+    }
     const title = document.getElementById("projectTitle")?.value.trim();
     const description = document.getElementById("projectDescription")?.value.trim() || "";
     if (!title) return;
@@ -1076,41 +1083,6 @@ function projectOverviewHtml(project) {
         )}</p>
       </article>
 
-      <article class="panel">
-        <div class="panel-head"><h2>Załączniki</h2></div>
-        ${
-          filesCount === 0
-            ? `<p class="files-empty-inline">Brak załączników w tym projekcie.</p>`
-            : `<ul class="project-files">
-                ${(project.files || [])
-                  .map(
-                    (file) => `
-                  <li>
-                    <strong>${escapeHtml(file.name)}</strong>
-                    <span>${findCategoryLabel(file.categoryId)}</span>
-                  </li>`
-                  )
-                  .join("")}
-              </ul>`
-        }
-      </article>
-
-      <article class="panel">
-        <div class="panel-head">
-          <h2>Dokumenty do złożenia</h2>
-          ${
-            surveyDocs.length
-              ? `<button type="button" class="ghost-btn table-action-btn" data-role="open-formal-survey" data-project-id="${project.id}">Edytuj ankietę</button>`
-              : ""
-          }
-        </div>
-        ${
-          surveyDocs.length
-            ? documentsChecklistHtml(surveyDocs)
-            : `<p class="files-empty-inline">Brak listy — uruchom ankietę formalną, aby wygenerować dokumenty urzędowe.</p>`
-        }
-      </article>
-
       <div class="project-cta-row">
         <div class="cta-card cta-primary cta-with-generate">
           <button type="button" class="cta-main" data-role="open-building-form" data-project-id="${project.id}">
@@ -1139,6 +1111,41 @@ function projectOverviewHtml(project) {
           }</span>
         </button>
       </div>
+
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Dokumenty do złożenia</h2>
+          ${
+            surveyDocs.length
+              ? `<button type="button" class="ghost-btn table-action-btn" data-role="open-formal-survey" data-project-id="${project.id}">Edytuj ankietę</button>`
+              : ""
+          }
+        </div>
+        ${
+          surveyDocs.length
+            ? documentsChecklistHtml(surveyDocs)
+            : `<p class="files-empty-inline">Brak listy — uruchom ankietę formalną, aby wygenerować dokumenty urzędowe.</p>`
+        }
+      </article>
+
+      <article class="panel">
+        <div class="panel-head"><h2>Załączniki</h2></div>
+        ${
+          filesCount === 0
+            ? `<p class="files-empty-inline">Brak załączników w tym projekcie.</p>`
+            : `<ul class="project-files">
+                ${(project.files || [])
+                  .map(
+                    (file) => `
+                  <li>
+                    <strong>${escapeHtml(file.name)}</strong>
+                    <span>${findCategoryLabel(file.categoryId)}</span>
+                  </li>`
+                  )
+                  .join("")}
+              </ul>`
+        }
+      </article>
     </div>`;
 }
 
@@ -1549,7 +1556,7 @@ function buildingProjectFormHtml(project) {
       </header>
 
       <form id="buildingProjectForm" class="building-form" autocomplete="off">
-        <details class="form-section" open data-section="metryka">
+        <details class="form-section" data-section="metryka">
           ${sectionSummaryHtml(
             "01",
             "Metryka inwestycji i strona tytułowa",
@@ -2462,6 +2469,7 @@ function openProjectForEdit(projectId) {
   if (heading) heading.textContent = "Edycja projektu";
   if (eyebrow) eyebrow.textContent = "Zapisany projekt";
   updateFilesUi();
+  if (typeof notifyTutorial === "function") notifyTutorial("edit");
 }
 
 function recentProjectsWatermarkHtml() {
@@ -2479,7 +2487,7 @@ function recentProjectsWatermarkHtml() {
         </div>
       </div>
       <p class="watermark-title">Brak zapisanych projektów</p>
-      <p class="watermark-hint">Stwórz pierwszy projekt budowlany powyżej</p>
+      <p class="watermark-hint">Użyj przycisku +, aby zacząć</p>
     </div>`;
 }
 
@@ -2555,7 +2563,7 @@ function hydrateDashboard() {
   const panelHead =
     content.querySelector(".recent-projects-panel .panel-head h2") ||
     content.querySelector(".grid-two .panel-head h2");
-  if (panelHead) panelHead.textContent = "Ostatnie projekty";
+  if (panelHead) panelHead.textContent = "Projekty";
 
   const link =
     content.querySelector(".recent-projects-panel .panel-head .text-link") ||
@@ -2728,6 +2736,10 @@ function renderView(view, options = {}) {
   void content.offsetWidth;
   content.style.animation = "";
   closeMenu();
+  if (typeof notifyTutorial === "function") {
+    notifyTutorial("view", view);
+    notifyTutorial("view-rendered", view);
+  }
 }
 
 function openMenu() {
@@ -2747,6 +2759,13 @@ document.querySelectorAll(".nav-item").forEach((item) => {
       return;
     }
     renderView(item.dataset.view);
+  });
+});
+
+document.querySelectorAll(".brand-mark").forEach((brand) => {
+  brand.addEventListener("click", (event) => {
+    event.preventDefault();
+    renderView(brand.dataset.view || "dashboard");
   });
 });
 
@@ -2779,3 +2798,38 @@ document.addEventListener("keydown", (event) => {
     closeMenu();
   }
 });
+
+const THEME_STORAGE_KEY = "snappoint.theme";
+
+function applyTheme(themeId) {
+  const id = themeId === "homeguide" ? "homeguide" : "snappoint";
+  if (id === "snappoint") {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.setAttribute("data-theme", id);
+  }
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, id);
+  } catch (e) {}
+  document.querySelectorAll(".theme-swatch[data-theme-id]").forEach((btn) => {
+    if (btn.disabled) return;
+    btn.classList.toggle("is-active", btn.dataset.themeId === id);
+  });
+}
+
+function initThemeSwitcher() {
+  let saved = "snappoint";
+  try {
+    saved = localStorage.getItem(THEME_STORAGE_KEY) || "snappoint";
+  } catch (e) {}
+  applyTheme(saved);
+
+  document.querySelectorAll(".theme-swatch[data-theme-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.disabled) return;
+      applyTheme(btn.dataset.themeId);
+    });
+  });
+}
+
+initThemeSwitcher();

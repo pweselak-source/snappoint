@@ -6,12 +6,22 @@
     <title>snapPoint — dokumenty formalne</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.css" />
     <link rel="stylesheet" href="styles.css" />
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("snappoint.theme") || "snappoint";
+          if (theme && theme !== "snappoint") {
+            document.documentElement.setAttribute("data-theme", theme);
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar" aria-label="Nawigacja główna">
         <div class="sidebar-brand">
-          <a href="#" class="brand-mark" aria-label="snapPoint">
+          <a href="#" class="brand-mark" data-view="dashboard" aria-label="snapPoint — Pulpit">
             snappoint<span class="dot">.</span>
           </a>
           <p class="brand-sub">Dokumenty formalne projektu</p>
@@ -34,7 +44,7 @@
                 <path d="M15 4v3h3M9 12h6M9 16h4" />
               </svg>
             </span>
-            Projekty budowlane
+            Dokument projektu bud.
           </a>
           <a class="nav-item" href="#" data-view="docs-to-submit">
             <span class="nav-icon" aria-hidden="true">
@@ -52,16 +62,6 @@
               </svg>
             </span>
             Załączniki
-          </a>
-
-          <p class="nav-label">Narzędzia</p>
-          <a class="nav-item is-disabled" href="#" data-view="checklist" aria-disabled="true" tabindex="-1">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                <path d="M9 6h11M9 12h11M9 18h11M5 6.5l1 1 2-2M5 12.5l1 1 2-2M5 18.5l1 1 2-2" />
-              </svg>
-            </span>
-            Checklista formalna
           </a>
         </nav>
 
@@ -89,6 +89,30 @@
           </div>
 
           <div class="topbar-right">
+            <div class="theme-switcher" role="group" aria-label="Motyw kolorystyczny">
+              <button
+                type="button"
+                class="theme-swatch is-active"
+                data-theme-id="snappoint"
+                title="snapPoint"
+                aria-label="Motyw snapPoint"
+              ></button>
+              <button
+                type="button"
+                class="theme-swatch theme-swatch-homeguide"
+                data-theme-id="homeguide"
+                title="HomeGuide"
+                aria-label="Motyw HomeGuide"
+              ></button>
+              <button
+                type="button"
+                class="theme-swatch theme-swatch-soon"
+                data-theme-id="theme-2"
+                title="Drugi motyw — wkrótce"
+                aria-label="Drugi motyw wkrótce"
+                disabled
+              ></button>
+            </div>
             <div class="search">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
                 <circle cx="11" cy="11" r="6.5" />
@@ -96,18 +120,14 @@
               </svg>
               <input type="search" placeholder="Szukaj dokumentu lub projektu…" />
             </div>
-            <button class="ghost-btn" type="button">Eksport</button>
-            <button class="primary-btn" type="button">Nowy dokument</button>
             <div class="avatar" title="Architekt">AK</div>
           </div>
         </header>
 
         <main class="content" id="content">
-          <section class="hero-panel create-panel">
+          <section class="workspace-bar panel">
             <button class="create-project" type="button" data-view="new-project">
               <span class="create-visual" aria-hidden="true">
-                <span class="orb orb-a"></span>
-                <span class="orb orb-b"></span>
                 <span class="plus-mark">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
                     <path d="M12 5v14M5 12h14" />
@@ -115,19 +135,25 @@
                 </span>
               </span>
               <span class="create-copy">
-                <span class="eyebrow">Nowy start</span>
-                <span class="create-title">
-                  Stwórz nowy
-                  <span class="gradient-text">projekt budowlany</span>
-                </span>
-                <span class="lede">
-                  Tutaj stworzysz formalny projekt budowlany spełniający
-                  <strong>100% urzędowych wymagań</strong>.
+                <span class="workspace-kicker">Workspace</span>
+                <span class="workspace-title">Pulpit projektów</span>
+                <span class="workspace-desc">
+                  Twórz i prowadź projekty budowlane, ankiety formalne oraz dokumenty do złożenia.
                 </span>
               </span>
             </button>
-            <button type="button" class="ghost-btn clear-mock-btn" data-role="clear-mock-data">
-              Wyczyść dane mockupu
+            <button
+              type="button"
+              class="clear-mock-icon"
+              data-role="clear-mock-data"
+              title="Wyczyść dane mockupu"
+              aria-label="Wyczyść dane mockupu"
+            >
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden="true">
+                <path d="M5 7h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                <path d="M9 7V5.8A1.8 1.8 0 0 1 10.8 4h2.4A1.8 1.8 0 0 1 15 5.8V7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                <path d="M8 7l.7 11.2A1.8 1.8 0 0 0 10.5 20h3a1.8 1.8 0 0 0 1.8-1.8L16 7" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+              </svg>
             </button>
           </section>
 
@@ -153,7 +179,7 @@
           <section class="grid-two">
             <article class="panel recent-projects-panel">
               <div class="panel-head">
-                <h2>Ostatnie projekty</h2>
+                <h2>Projekty</h2>
                 <a href="#" class="text-link">Zobacz wszystkie</a>
               </div>
               <div class="recent-projects-body" id="recentProjectsBody">
@@ -170,7 +196,7 @@
                     </div>
                   </div>
                   <p class="watermark-title">Brak zapisanych projektów</p>
-                  <p class="watermark-hint">Stwórz pierwszy projekt budowlany powyżej</p>
+                  <p class="watermark-hint">Użyj przycisku +, aby zacząć</p>
                 </div>
               </div>
             </article>
@@ -202,5 +228,6 @@
     <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
     <script src="survey-engine.js"></script>
     <script src="app.js"></script>
+    <script src="tutorial.js"></script>
   </body>
 </html>
