@@ -86,9 +86,85 @@ const PROJECTS_STORAGE_KEY = "snappoint.projects";
 const content = document.getElementById("content");
 const pageTitle = document.getElementById("pageTitle");
 const dashboardShellHtml = content.innerHTML;
+const appShell = document.querySelector(".app-shell");
 const sidebar = document.querySelector(".sidebar");
 const backdrop = document.getElementById("sidebarBackdrop");
 const menuToggle = document.getElementById("menuToggle");
+
+const SIDEBAR_COLLAPSED_KEY = "snappoint.sidebarCollapsed";
+const AI_CHAT_MINIMIZED_KEY = "snappoint.aiChatMinimized";
+
+function isMobileNav() {
+  return window.matchMedia("(max-width: 860px)").matches;
+}
+
+function isSidebarCollapsed() {
+  try {
+    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setSidebarCollapsed(collapsed) {
+  try {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+  applySidebarCollapsedState();
+}
+
+function applySidebarCollapsedState() {
+  const collapsed = isSidebarCollapsed();
+  const desktopCollapsed = collapsed && !isMobileNav();
+  appShell?.classList.toggle("is-sidebar-collapsed", desktopCollapsed);
+  const label = collapsed ? "Rozwiń menu" : "Zwiń menu";
+  if (menuToggle) {
+    menuToggle.setAttribute("aria-label", isMobileNav() ? "Otwórz menu" : label);
+    menuToggle.setAttribute("title", isMobileNav() ? "Menu" : label);
+    menuToggle.setAttribute("aria-expanded", String(!desktopCollapsed));
+  }
+  document.querySelectorAll('[data-role="toggle-sidebar-rail"]').forEach((btn) => {
+    btn.setAttribute("aria-label", label);
+    btn.setAttribute("title", label);
+    btn.setAttribute("aria-expanded", String(!desktopCollapsed));
+  });
+}
+
+function isAiChatMinimized() {
+  try {
+    return localStorage.getItem(AI_CHAT_MINIMIZED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setAiChatMinimized(minimized) {
+  try {
+    localStorage.setItem(AI_CHAT_MINIMIZED_KEY, minimized ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+  applyAiChatMinimizedState();
+}
+
+function applyAiChatMinimizedState() {
+  const minimized = isAiChatMinimized();
+  const chats = document.querySelectorAll(".ai-chat");
+  chats.forEach((chat) => {
+    chat.classList.toggle("is-minimized", minimized);
+    const btn = chat.querySelector('[data-role="toggle-ai-chat"]');
+    if (!btn) return;
+    btn.setAttribute("aria-expanded", String(!minimized));
+    btn.setAttribute("title", "Minimalizuj czat");
+    btn.setAttribute("aria-label", "Minimalizuj czat AI");
+  });
+  const fab = document.getElementById("aiChatFab");
+  if (fab) {
+    fab.hidden = !(minimized && chats.length > 0);
+  }
+}
 
 /** @type {{ id: string, name: string, size: number, categoryId: string }[]} */
 let projectFiles = [];
@@ -463,14 +539,29 @@ function newProjectHtml() {
 }
 
 function aiChatHtml() {
+  const minimized = isAiChatMinimized();
   return `
-    <aside class="ai-chat" aria-label="Asystent AI">
+    <aside class="ai-chat${minimized ? " is-minimized" : ""}" aria-label="Asystent AI">
       <header class="ai-chat-head">
         <div>
           <p class="ai-chat-kicker">Asystent</p>
           <h2>snapPoint AI</h2>
         </div>
-        <span class="ai-chat-badge">Demo</span>
+        <div class="ai-chat-head-actions">
+          <span class="ai-chat-badge">Demo</span>
+          <button
+            type="button"
+            class="icon-btn ai-chat-toggle"
+            data-role="toggle-ai-chat"
+            title="Minimalizuj czat"
+            aria-label="Minimalizuj czat AI"
+            aria-expanded="${minimized ? "false" : "true"}"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path d="M9 6l6 6-6 6" />
+            </svg>
+          </button>
+        </div>
       </header>
       <div class="ai-chat-messages" id="aiChatMessages"></div>
       <form class="ai-chat-composer" id="aiChatForm">
@@ -528,6 +619,8 @@ function nextAiReply() {
 
 function bindAiChat() {
   aiUserMessageCount = 0;
+  applyAiChatMinimizedState();
+
   const form = document.getElementById("aiChatForm");
   const input = document.getElementById("aiChatInput");
   form?.addEventListener("submit", (event) => {
@@ -540,6 +633,14 @@ function bindAiChat() {
     window.setTimeout(() => {
       appendChatBubble(reply, "bot");
     }, 350);
+  });
+
+  content.querySelectorAll('[data-role="toggle-ai-chat"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setAiChatMinimized(true);
+    });
   });
 }
 
@@ -644,6 +745,7 @@ function bindNewProjectForm() {
 
     const existing = editingProjectId ? getProjectById(editingProjectId) : null;
     const project = persistProject({
+      ...(existing || {}),
       id: existing?.id || `p${Date.now()}`,
       title,
       description,
@@ -716,6 +818,46 @@ function compareSortValues(a, b, dir) {
 
 let buildingProjectsSort = { key: "title", dir: "asc" };
 let attachmentsSort = { key: "project", dir: "asc" };
+/** @type {Record<string, string>} */
+let buildingProjectsFilters = {};
+
+function getDocFormsAverageFill(project) {
+  const docs = project.formalSurvey?.documents || [];
+  if (!docs.length) return 0;
+  const total = docs.reduce((sum, doc) => {
+    const saved = project.docForms?.[doc.id] || {};
+    return sum + countDocFormFill(doc.id, saved).percent;
+  }, 0);
+  return Math.round(total / docs.length);
+}
+
+function getBuildingProjectRowData(project) {
+  const form = project.buildingForm || {};
+  const files = project.files || [];
+  const docs = project.formalSurvey?.documents || [];
+  const categorized = files.filter((file) => file.categoryId).length;
+  const fill = getBuildingFormFillPercent(project);
+  const hasSurvey = Boolean(project.formalSurvey);
+  return {
+    id: project.id,
+    title: project.title || "Bez tytułu",
+    description: project.description || "",
+    intent: form.intentName || project.title || "",
+    investor: form.investorName || "",
+    site: form.siteAddress || "",
+    category: form.objectCategory || "",
+    plots: form.plotIds || "",
+    createdAt: project.createdAt || "",
+    updatedAt: project.updatedAt || project.createdAt || "",
+    fill,
+    files: files.length,
+    categorized,
+    docs: docs.length,
+    survey: hasSurvey ? "tak" : "nie",
+    surveyLabel: hasSurvey ? `Tak · ${docs.length}` : "Nie",
+    docFill: getDocFormsAverageFill(project),
+  };
+}
 
 function collectAttachmentRows() {
   const rows = [];
@@ -750,20 +892,33 @@ function sortAttachmentRows(rows) {
 function sortBuildingProjects(projects) {
   const { key, dir } = buildingProjectsSort;
   return [...projects].sort((a, b) => {
+    const ra = getBuildingProjectRowData(a);
+    const rb = getBuildingProjectRowData(b);
     if (key === "updated") {
       return compareSortValues(
-        new Date(a.updatedAt || a.createdAt || 0).getTime(),
-        new Date(b.updatedAt || b.createdAt || 0).getTime(),
+        new Date(ra.updatedAt || 0).getTime(),
+        new Date(rb.updatedAt || 0).getTime(),
         dir
       );
     }
-    if (key === "fill") {
-      return compareSortValues(getBuildingFormFillPercent(a), getBuildingFormFillPercent(b), dir);
+    if (key === "created") {
+      return compareSortValues(
+        new Date(ra.createdAt || 0).getTime(),
+        new Date(rb.createdAt || 0).getTime(),
+        dir
+      );
     }
-    if (key === "files") {
-      return compareSortValues(a.files?.length || 0, b.files?.length || 0, dir);
-    }
-    return compareSortValues((a.title || "").toLowerCase(), (b.title || "").toLowerCase(), dir);
+    if (key === "fill") return compareSortValues(ra.fill, rb.fill, dir);
+    if (key === "files") return compareSortValues(ra.files, rb.files, dir);
+    if (key === "docs") return compareSortValues(ra.docs, rb.docs, dir);
+    if (key === "docFill") return compareSortValues(ra.docFill, rb.docFill, dir);
+    if (key === "investor")
+      return compareSortValues(ra.investor.toLowerCase(), rb.investor.toLowerCase(), dir);
+    if (key === "category")
+      return compareSortValues(ra.category.toLowerCase(), rb.category.toLowerCase(), dir);
+    if (key === "site") return compareSortValues(ra.site.toLowerCase(), rb.site.toLowerCase(), dir);
+    if (key === "survey") return compareSortValues(ra.survey, rb.survey, dir);
+    return compareSortValues(ra.title.toLowerCase(), rb.title.toLowerCase(), dir);
   });
 }
 
@@ -783,6 +938,10 @@ function downloadAttachmentMock(file) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
+function buildingProjectsFilterValue(key) {
+  return buildingProjectsFilters[key] || "";
+}
+
 function buildingProjectsViewHtml() {
   const projects = sortBuildingProjects(loadProjects());
   const sort = buildingProjectsSort;
@@ -797,68 +956,204 @@ function buildingProjectsViewHtml() {
       </section>`;
   }
 
+  const filterInput = (key, placeholder) => `
+    <input
+      type="search"
+      class="column-filter"
+      data-role="filter-building-col"
+      data-filter-key="${key}"
+      value="${escapeHtml(buildingProjectsFilterValue(key))}"
+      placeholder="${escapeHtml(placeholder)}"
+      autocomplete="off"
+    />`;
+
   return `
-    <section class="projects-view">
-      <div class="data-table-wrap panel">
-        <table class="data-table" data-table="building-projects">
-          <thead>
-            <tr>
-              <th>
-                <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="title">
-                  Nazwa projektu ${sortArrowHtml(sort.key === "title", sort.dir)}
-                </button>
-              </th>
-              <th>Typ</th>
-              <th>
-                <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="updated">
-                  Aktualizacja ${sortArrowHtml(sort.key === "updated", sort.dir)}
-                </button>
-              </th>
-              <th>
-                <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="fill">
-                  Wypełnienie ${sortArrowHtml(sort.key === "fill", sort.dir)}
-                </button>
-              </th>
-              <th>
-                <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="files">
-                  Załączniki ${sortArrowHtml(sort.key === "files", sort.dir)}
-                </button>
-              </th>
-              <th class="col-actions">Akcje</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${projects
-              .map((project) => {
-                const fill = getBuildingFormFillPercent(project);
-                return `
+    <section class="projects-view building-projects-view">
+      <header class="form-intro form-intro-row">
+        <div class="form-intro-copy">
+          <p class="eyebrow">Workspace</p>
+          <h1>Projekty budowlane</h1>
+          <p class="lede form-lede">Pełna lista projektów z filtracją po kolumnach — jak na pulpicie, tylko w tabeli.</p>
+        </div>
+        <button class="primary-btn" type="button" data-view="new-project">Nowy projekt</button>
+      </header>
+
+      <div class="attachments-panel" data-role="building-projects-table">
+        <div class="table-toolbar">
+          <p class="table-filter-meta" data-role="building-filter-count">${projects.length} projektów</p>
+          <button type="button" class="ghost-btn table-action-btn" data-role="clear-building-filters">
+            Wyczyść filtry
+          </button>
+        </div>
+        <div class="data-table-wrap data-table-lined-wrap panel">
+          <table class="data-table data-table-lined data-table-wide" data-table="building-projects">
+            <thead>
               <tr>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="title">
+                    Projekt ${sortArrowHtml(sort.key === "title", sort.dir)}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="investor">
+                    Inwestor ${sortArrowHtml(sort.key === "investor", sort.dir)}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="site">
+                    Lokalizacja ${sortArrowHtml(sort.key === "site", sort.dir)}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="category">
+                    Kategoria ${sortArrowHtml(sort.key === "category", sort.dir)}
+                  </button>
+                </th>
+                <th>Działki</th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="created">
+                    Utworzono ${sortArrowHtml(sort.key === "created", sort.dir)}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="updated">
+                    Aktualizacja ${sortArrowHtml(sort.key === "updated", sort.dir)}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="fill">
+                    Formularz ${sortArrowHtml(sort.key === "fill", sort.dir)}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="files">
+                    Załączniki ${sortArrowHtml(sort.key === "files", sort.dir)}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="survey">
+                    Ankieta ${sortArrowHtml(sort.key === "survey", sort.dir)}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="docs">
+                    Dok. do złożenia ${sortArrowHtml(sort.key === "docs", sort.dir)}
+                  </button>
+                </th>
+                <th>
+                  <button type="button" class="sort-btn" data-role="sort-table" data-sort-key="docFill">
+                    Wypełn. dok. ${sortArrowHtml(sort.key === "docFill", sort.dir)}
+                  </button>
+                </th>
+                <th class="col-actions">Akcje</th>
+              </tr>
+              <tr class="filter-row">
+                <th>${filterInput("title", "Filtr nazwy / opisu…")}</th>
+                <th>${filterInput("investor", "Inwestor…")}</th>
+                <th>${filterInput("site", "Adres…")}</th>
+                <th>${filterInput("category", "Kategoria…")}</th>
+                <th>${filterInput("plots", "Działki…")}</th>
+                <th>${filterInput("created", "Data…")}</th>
+                <th>${filterInput("updated", "Data…")}</th>
+                <th>${filterInput("fill", "np. >=50")}</th>
+                <th>${filterInput("files", "np. >=1")}</th>
+                <th>
+                  <select class="column-filter" data-role="filter-building-col" data-filter-key="survey">
+                    <option value="">Wszystkie</option>
+                    <option value="tak" ${
+                      buildingProjectsFilterValue("survey") === "tak" ? "selected" : ""
+                    }>Tak</option>
+                    <option value="nie" ${
+                      buildingProjectsFilterValue("survey") === "nie" ? "selected" : ""
+                    }>Nie</option>
+                  </select>
+                </th>
+                <th>${filterInput("docs", "np. >=3")}</th>
+                <th>${filterInput("docFill", "np. >=20")}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${projects
+                .map((project) => {
+                  const row = getBuildingProjectRowData(project);
+                  return `
+              <tr
+                data-filter-title="${escapeHtml(
+                  `${row.title} ${row.description} ${row.intent}`.toLowerCase()
+                )}"
+                data-filter-investor="${escapeHtml(row.investor.toLowerCase())}"
+                data-filter-site="${escapeHtml(row.site.toLowerCase())}"
+                data-filter-category="${escapeHtml(row.category.toLowerCase())}"
+                data-filter-plots="${escapeHtml(row.plots.toLowerCase())}"
+                data-filter-created="${escapeHtml(formatDate(row.createdAt).toLowerCase())}"
+                data-filter-updated="${escapeHtml(formatDate(row.updatedAt).toLowerCase())}"
+                data-filter-fill="${row.fill}"
+                data-filter-files="${row.files}"
+                data-filter-survey="${row.survey}"
+                data-filter-docs="${row.docs}"
+                data-filter-doc-fill="${row.docFill}"
+              >
                 <td>
                   <div class="table-primary">
-                    <strong>${escapeHtml(project.title)}</strong>
-                    <span>${escapeHtml((project.description || "Bez opisu").slice(0, 72))}${
-                  (project.description || "").length > 72 ? "…" : ""
-                }</span>
+                    <button type="button" class="table-link" data-project-id="${project.id}">
+                      ${escapeHtml(row.title)}
+                    </button>
+                    <span>${escapeHtml((row.description || "Bez opisu").slice(0, 90))}${
+                    (row.description || "").length > 90 ? "…" : ""
+                  }</span>
                   </div>
                 </td>
-                <td><span class="table-pill">Projekt budowlany</span></td>
-                <td>${formatDate(project.updatedAt || project.createdAt)}</td>
+                <td>${row.investor ? escapeHtml(row.investor) : "—"}</td>
+                <td>${row.site ? escapeHtml(row.site) : "—"}</td>
+                <td>${
+                  row.category
+                    ? `<span class="table-pill">${escapeHtml(row.category)}</span>`
+                    : `<span class="table-pill muted">Brak</span>`
+                }</td>
+                <td><span class="table-cell-clip">${
+                  row.plots ? escapeHtml(row.plots) : "—"
+                }</span></td>
+                <td>${formatDate(row.createdAt)}</td>
+                <td>${formatDate(row.updatedAt)}</td>
                 <td>
                   <div class="fill-cell">
-                    <div class="fill-bar" aria-hidden="true"><span style="width:${fill}%"></span></div>
-                    <strong>${fill}%</strong>
+                    <div class="fill-bar" aria-hidden="true"><span style="width:${row.fill}%"></span></div>
+                    <strong>${row.fill}%</strong>
                   </div>
                 </td>
-                <td>${project.files?.length || 0}</td>
+                <td>
+                  <strong>${row.files}</strong>
+                  <span class="table-sub">${row.categorized} skategor.</span>
+                </td>
+                <td>
+                  <span class="table-pill ${row.survey === "tak" ? "" : "muted"}">${escapeHtml(
+                    row.surveyLabel
+                  )}</span>
+                </td>
+                <td>${row.docs}</td>
+                <td>
+                  <div class="fill-cell">
+                    <div class="fill-bar" aria-hidden="true"><span style="width:${row.docFill}%"></span></div>
+                    <strong>${row.docFill}%</strong>
+                  </div>
+                </td>
                 <td class="col-actions">
                   <div class="table-actions">
+                    <button
+                      type="button"
+                      class="ghost-btn table-action-btn"
+                      data-project-id="${project.id}"
+                    >
+                      Otwórz
+                    </button>
                     <button
                       type="button"
                       class="ghost-btn table-action-btn"
                       data-role="preview-building-form"
                       data-project-id="${project.id}"
                     >
-                      Podgląd formularza
+                      Formularz
                     </button>
                     <button
                       type="button"
@@ -873,10 +1168,14 @@ function buildingProjectsViewHtml() {
                   </div>
                 </td>
               </tr>`;
-              })
-              .join("")}
-          </tbody>
-        </table>
+                })
+                .join("")}
+            </tbody>
+          </table>
+        </div>
+        <p class="files-empty-inline attachment-filter-empty" data-role="building-filter-empty" hidden>
+          Brak projektów pasujących do filtrów.
+        </p>
       </div>
     </section>`;
 }
@@ -934,10 +1233,20 @@ function docsToSubmitViewHtml() {
                   <button
                     type="button"
                     class="ghost-btn table-action-btn"
-                    data-role="open-formal-survey"
+                    data-role="open-doc-form"
                     data-project-id="${project.id}"
+                    data-doc-id="${escapeHtml(doc.id)}"
                   >
-                    Ankieta
+                    Wypełnij
+                  </button>
+                  <button
+                    type="button"
+                    class="ghost-btn table-action-btn"
+                    data-role="download-doc-pdf"
+                    data-project-id="${project.id}"
+                    data-doc-id="${escapeHtml(doc.id)}"
+                  >
+                    PDF
                   </button>
                 </td>
               </tr>`
@@ -970,6 +1279,297 @@ function documentsChecklistHtml(documents, { emptyText = "Brak dokumentów — o
         )
         .join("")}
     </ul>`;
+}
+
+function attachmentCategoryOptionsHtml(selected = "") {
+  const options = attachmentCategories
+    .flatMap((group) =>
+      group.types.map(
+        (type) =>
+          `<option value="${escapeHtml(type.id)}" ${
+            selected === type.id ? "selected" : ""
+          }>${escapeHtml(type.label)}</option>`
+      )
+    )
+    .join("");
+  return `<option value="">Wszystkie typy</option>${options}`;
+}
+
+function projectAttachmentsTableHtml(project) {
+  const files = project.files || [];
+  if (!files.length) {
+    return `<p class="files-empty-inline">Brak załączników w tym projekcie.</p>`;
+  }
+
+  return `
+    <div class="attachments-panel" data-role="project-attachments">
+      <div class="table-toolbar">
+        <label class="table-filter">
+          <span class="sr-only">Filtruj po nazwie</span>
+          <input
+            type="search"
+            data-role="filter-attachment-name"
+            placeholder="Filtruj po nazwie pliku…"
+            autocomplete="off"
+          />
+        </label>
+        <label class="table-filter">
+          <span class="sr-only">Filtruj po typie</span>
+          <select data-role="filter-attachment-category">
+            ${attachmentCategoryOptionsHtml()}
+          </select>
+        </label>
+        <p class="table-filter-meta" data-role="attachment-filter-count">${files.length} plików</p>
+      </div>
+      <div class="data-table-wrap data-table-lined-wrap">
+        <table class="data-table data-table-lined" data-table="project-attachments">
+          <thead>
+            <tr>
+              <th>Nazwa pliku</th>
+              <th>Typ</th>
+              <th>Rozmiar</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${files
+              .map(
+                (file) => `
+              <tr
+                data-file-name="${escapeHtml((file.name || "").toLowerCase())}"
+                data-file-category="${escapeHtml(file.categoryId || "")}"
+              >
+                <td><strong>${escapeHtml(file.name)}</strong></td>
+                <td><span class="table-pill ${file.categoryId ? "" : "muted"}">${escapeHtml(
+                  findCategoryLabel(file.categoryId)
+                )}</span></td>
+                <td>${file.size ? formatBytes(file.size) : "—"}</td>
+              </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+      <p class="files-empty-inline attachment-filter-empty" data-role="attachment-filter-empty" hidden>
+        Brak załączników pasujących do filtra.
+      </p>
+    </div>`;
+}
+
+function docFormFieldHtml(docId, field, value = "") {
+  const fullName = docFieldKey(docId, field.name);
+  const control =
+    field.type === "textarea"
+      ? `<textarea name="${fullName}" rows="3" placeholder="${escapeHtml(
+          field.label
+        )}">${escapeHtml(value)}</textarea>`
+      : `<input name="${fullName}" type="text" value="${escapeHtml(value)}" placeholder="${escapeHtml(
+          field.label
+        )}" />`;
+
+  return `
+    <div class="field">
+      <span class="field-label">${escapeHtml(field.label)}</span>
+      <div class="field-control ${field.type === "textarea" ? "field-control-textarea" : ""}">
+        ${control}
+        ${assistButtonHtml("assist-field", fullName, `Pomoc asystenta: ${field.label}`)}
+      </div>
+    </div>`;
+}
+
+function docFormItemHtml(project, doc, { open = false } = {}) {
+  const saved = project.docForms?.[doc.id] || {};
+  const template = resolveDocFormTemplate(doc.id);
+  const fill = countDocFormFill(doc.id, saved);
+
+  return `
+    <details class="form-section doc-form-item" data-doc-id="${escapeHtml(doc.id)}" ${
+      open ? "open" : ""
+    }>
+      <summary>
+        <span class="section-num">${fill.percent}%</span>
+        <span class="section-summary-copy">
+          <strong>${escapeHtml(doc.title)}</strong>
+          <em>${
+            doc.source === "standard" ? "Dokument standardowy" : "Dokument warunkowy"
+          } · ${fill.filled}/${fill.total} pól</em>
+        </span>
+        <span class="doc-form-summary-actions">
+          <button
+            type="button"
+            class="icon-action-btn doc-download-btn"
+            data-role="download-doc-pdf"
+            data-project-id="${project.id}"
+            data-doc-id="${escapeHtml(doc.id)}"
+            title="Pobierz PDF (mock)"
+            aria-label="Pobierz PDF: ${escapeHtml(doc.title)}"
+          >
+            ${pdfIconSvg(16)}
+            <span>PDF</span>
+          </button>
+          ${assistButtonHtml(
+            "assist-section",
+            `doc:${doc.id}`,
+            `Wypełnij cały dokument: ${doc.title}`
+          )}
+        </span>
+      </summary>
+      <div class="section-body doc-form-body">
+        <form class="doc-mini-form" data-role="doc-form" data-doc-id="${escapeHtml(doc.id)}" autocomplete="off">
+          ${template.sections
+            .map(
+              (section, index) => `
+            <details class="form-section doc-form-section" data-doc-section="${escapeHtml(
+              section.key
+            )}" data-doc-id="${escapeHtml(doc.id)}">
+              ${sectionSummaryHtml(
+                String(index + 1).padStart(2, "0"),
+                section.title,
+                section.subtitle,
+                `doc:${doc.id}:${section.key}`
+              )}
+              <div class="section-body">
+                ${section.fields
+                  .map((field) => docFormFieldHtml(doc.id, field, saved[field.name] || ""))
+                  .join("")}
+              </div>
+            </details>`
+            )
+            .join("")}
+          <div class="form-actions doc-form-actions">
+            <button
+              type="button"
+              class="ghost-btn"
+              data-role="download-doc-pdf"
+              data-project-id="${project.id}"
+              data-doc-id="${escapeHtml(doc.id)}"
+            >
+              Pobierz PDF
+            </button>
+            <button type="submit" class="primary-btn">Zapisz dokument</button>
+          </div>
+        </form>
+      </div>
+    </details>`;
+}
+
+function projectFoldHtml({
+  role,
+  title,
+  subtitle,
+  bodyHtml,
+  actionsHtml = "",
+  open = false,
+  extraClass = "",
+}) {
+  return `
+    <details class="panel project-fold ${extraClass}" data-role="${role}" ${open ? "open" : ""}>
+      <summary class="project-fold-summary">
+        <div class="project-fold-copy">
+          <h2>${escapeHtml(title)}</h2>
+          <p>${subtitle}</p>
+        </div>
+        <div class="project-fold-actions">
+          ${actionsHtml}
+          <span class="project-fold-chevron" aria-hidden="true"></span>
+        </div>
+      </summary>
+      <div class="project-fold-body">
+        ${bodyHtml}
+      </div>
+    </details>`;
+}
+
+function buildingProjectFoldHtml(project) {
+  return projectFoldHtml({
+    role: "building-fold",
+    title: "Projekt budowlany",
+    subtitle: "Metryka, PZT, PAB, PT i załączniki urzędowe",
+    actionsHtml: `
+      <button
+        type="button"
+        class="icon-action-btn"
+        data-role="generate-building-project"
+        data-project-id="${project.id}"
+        title="Generuj projekt budowlany (PDF)"
+        aria-label="Generuj projekt budowlany PDF"
+      >
+        ${pdfIconSvg(16)}
+      </button>`,
+    bodyHtml: `
+      <div class="project-fold-cta">
+        <p>Wypełnij tomy projektu budowlanego i generuj zestawienie PDF.</p>
+        <div class="project-fold-cta-actions">
+          <button type="button" class="primary-btn" data-role="open-building-form" data-project-id="${project.id}">
+            Otwórz formularz
+          </button>
+          <button type="button" class="ghost-btn" data-role="generate-building-project" data-project-id="${project.id}">
+            Pobierz PDF
+          </button>
+        </div>
+      </div>`,
+  });
+}
+
+function formalSurveyFoldHtml(project) {
+  const count = project.formalSurvey?.documents?.length || 0;
+  return projectFoldHtml({
+    role: "survey-fold",
+    title: "Ankieta formalna",
+    subtitle: count
+      ? `Uzupełniona · ${count} dokumentów na liście`
+      : "Silnik reguł — wygeneruj listę dokumentów",
+    bodyHtml: `
+      <div class="project-fold-cta">
+        <p>${
+          count
+            ? "Możesz ponownie przejść ankietę i zaktualizować listę dokumentów do złożenia."
+            : "Odpowiedz na pytania, aby wygenerować listę wymaganych dokumentów urzędowych."
+        }</p>
+        <div class="project-fold-cta-actions">
+          <button type="button" class="primary-btn" data-role="open-formal-survey" data-project-id="${project.id}">
+            ${count ? "Edytuj ankietę" : "Uruchom ankietę"}
+          </button>
+        </div>
+      </div>`,
+  });
+}
+
+function documentsToSubmitPanelHtml(project, { focusDocId = null } = {}) {
+  const surveyDocs = project.formalSurvey?.documents || [];
+  const count = surveyDocs.length;
+  const foldOpen = Boolean(focusDocId);
+
+  return projectFoldHtml({
+    role: "docs-fold",
+    title: "Dokumenty do złożenia",
+    subtitle: count
+      ? `${count} dokumentów — rozwiń, wypełnij i pobierz PDF`
+      : "Brak listy — uruchom ankietę formalną",
+    open: foldOpen,
+    extraClass: "docs-fold",
+    actionsHtml: count
+      ? `<button type="button" class="ghost-btn table-action-btn" data-role="open-formal-survey" data-project-id="${project.id}">Ankieta</button>`
+      : "",
+    bodyHtml: count
+      ? `<div class="docs-forms-list">
+          ${surveyDocs
+            .map((doc) => docFormItemHtml(project, doc, { open: doc.id === focusDocId }))
+            .join("")}
+        </div>`
+      : `<p class="files-empty-inline">Brak listy — uruchom ankietę formalną, aby wygenerować dokumenty urzędowe.</p>`,
+  });
+}
+
+function attachmentsFoldHtml(project) {
+  const filesCount = project.files?.length || 0;
+  return projectFoldHtml({
+    role: "attachments-fold",
+    title: "Załączniki",
+    subtitle: filesCount
+      ? `${filesCount} plików — filtruj i przeglądaj listę`
+      : "Brak załączników w tym projekcie",
+    bodyHtml: projectAttachmentsTableHtml(project),
+  });
 }
 
 function formalSurveyPanelHtml(project, answers, stepIndex) {
@@ -1071,81 +1671,22 @@ function formalSurveyPanelHtml(project, answers, stepIndex) {
     </div>`;
 }
 
-function projectOverviewHtml(project) {
-  const filesCount = project.files?.length || 0;
-  const surveyDocs = project.formalSurvey?.documents || [];
+function projectOverviewHtml(project, options = {}) {
   return `
     <div class="detail-grid">
-      <article class="panel">
+      <article class="panel detail-desc-panel">
         <div class="panel-head"><h2>Opis</h2></div>
         <p class="project-desc detail-desc">${escapeHtml(
           project.description || "Bez opisu"
         )}</p>
       </article>
 
-      <div class="project-cta-row">
-        <div class="cta-card cta-primary cta-with-generate">
-          <button type="button" class="cta-main" data-role="open-building-form" data-project-id="${project.id}">
-            <span class="cta-kicker">Formularz formalny</span>
-            <span class="cta-title">Projekt budowlany</span>
-            <span class="cta-desc">Metryka, PZT, PAB, PT i załączniki urzędowe</span>
-          </button>
-          <button
-            type="button"
-            class="cta-generate-icon"
-            data-role="generate-building-project"
-            data-project-id="${project.id}"
-            title="Generuj projekt budowlany (PDF)"
-            aria-label="Generuj projekt budowlany PDF"
-          >
-            ${pdfIconSvg(18)}
-          </button>
-        </div>
-        <button type="button" class="cta-card cta-secondary" data-role="open-formal-survey" data-project-id="${project.id}">
-          <span class="cta-kicker">${surveyDocs.length ? "Uzupełniona" : "Silnik reguł"}</span>
-          <span class="cta-title">Ankieta formalna</span>
-          <span class="cta-desc">${
-            surveyDocs.length
-              ? `${surveyDocs.length} dokumentów na liście do złożenia`
-              : "Wygeneruj listę wymaganych dokumentów urzędowych"
-          }</span>
-        </button>
+      <div class="project-sections-grid">
+        ${buildingProjectFoldHtml(project)}
+        ${formalSurveyFoldHtml(project)}
+        ${documentsToSubmitPanelHtml(project, options)}
+        ${attachmentsFoldHtml(project)}
       </div>
-
-      <article class="panel">
-        <div class="panel-head">
-          <h2>Dokumenty do złożenia</h2>
-          ${
-            surveyDocs.length
-              ? `<button type="button" class="ghost-btn table-action-btn" data-role="open-formal-survey" data-project-id="${project.id}">Edytuj ankietę</button>`
-              : ""
-          }
-        </div>
-        ${
-          surveyDocs.length
-            ? documentsChecklistHtml(surveyDocs)
-            : `<p class="files-empty-inline">Brak listy — uruchom ankietę formalną, aby wygenerować dokumenty urzędowe.</p>`
-        }
-      </article>
-
-      <article class="panel">
-        <div class="panel-head"><h2>Załączniki</h2></div>
-        ${
-          filesCount === 0
-            ? `<p class="files-empty-inline">Brak załączników w tym projekcie.</p>`
-            : `<ul class="project-files">
-                ${(project.files || [])
-                  .map(
-                    (file) => `
-                  <li>
-                    <strong>${escapeHtml(file.name)}</strong>
-                    <span>${findCategoryLabel(file.categoryId)}</span>
-                  </li>`
-                  )
-                  .join("")}
-              </ul>`
-        }
-      </article>
     </div>`;
 }
 
@@ -1763,12 +2304,12 @@ function buildingProjectFormHtml(project) {
     </div>`;
 }
 
-function projectDetailHtml(project, panel = "overview") {
+function projectDetailHtml(project, panel = "overview", options = {}) {
   const filesCount = project.files?.length || 0;
   const isForm = panel === "building-form";
   const isSurvey = panel === "formal-survey";
 
-  let mainHtml = projectOverviewHtml(project);
+  let mainHtml = projectOverviewHtml(project, options);
   if (isForm) mainHtml = buildingProjectFormHtml(project);
   if (isSurvey) {
     mainHtml = formalSurveyPanelHtml(project, surveyDraft.answers, surveyDraft.step);
@@ -2009,6 +2550,16 @@ function fillFieldSample(fieldName, project) {
 
   const field = document.querySelector(`[name="${fieldName}"]`);
   if (!field) return;
+
+  if (fieldName.includes("__")) {
+    const [docId, shortName] = fieldName.split("__");
+    const sample = getDocFormSample(docId, shortName);
+    if (!sample) return;
+    field.value = sample;
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    return;
+  }
+
   const sample = ASSISTANT_FILL_SAMPLES[fieldName];
   if (!sample) return;
   field.value = sample;
@@ -2016,6 +2567,23 @@ function fillFieldSample(fieldName, project) {
 }
 
 function fillSectionSample(sectionKey, project) {
+  if (String(sectionKey || "").startsWith("doc:")) {
+    const parts = sectionKey.split(":");
+    const docId = parts[1];
+    const sectionId = parts[2];
+    if (!docId) return;
+
+    if (sectionId) {
+      listDocFormFields(docId)
+        .filter((field) => field.sectionKey === sectionId)
+        .forEach((field) => fillFieldSample(field.fullName, project));
+      return;
+    }
+
+    listDocFormFields(docId).forEach((field) => fillFieldSample(field.fullName, project));
+    return;
+  }
+
   const fields = SECTION_FIELD_MAP[sectionKey] || [];
   fields.forEach((name) => fillFieldSample(name, project));
 }
@@ -2089,29 +2657,22 @@ function pdfEscape(text) {
     .replace(/[^\x20-\x7E]/g, "?");
 }
 
-function buildProjectPdfBlob(project) {
-  const title = pdfEscape(project.title || "Projekt budowlany");
-  const desc = pdfEscape((project.description || "Bez opisu").slice(0, 180));
-  const meta = pdfEscape(
-    `snapPoint · ${formatDate(project.updatedAt || project.createdAt)} · zalacznikow: ${
-      project.files?.length || 0
-    }`
-  );
-  const stream = [
-    "BT",
-    "/F1 18 Tf",
-    "50 740 Td",
-    "(snapPoint — Projekt budowlany) Tj",
-    "0 -32 Td",
-    "/F1 14 Tf",
-    `(${title}) Tj`,
-    "0 -24 Td",
-    "/F1 11 Tf",
-    `(${desc}) Tj`,
-    "0 -20 Td",
-    `(${meta}) Tj`,
-    "ET",
-  ].join("\n");
+function buildSimplePdfBlob(lines) {
+  const safeLines = (lines || [])
+    .map((line) => pdfEscape(String(line || "").slice(0, 110)))
+    .filter(Boolean)
+    .slice(0, 28);
+
+  const streamParts = ["BT", "/F1 14 Tf", "50 760 Td"];
+  safeLines.forEach((line, index) => {
+    if (index === 0) {
+      streamParts.push(`(${line}) Tj`);
+    } else {
+      streamParts.push("0 -18 Td", `(${line}) Tj`);
+    }
+  });
+  streamParts.push("ET");
+  const stream = streamParts.join("\n");
 
   const objects = [];
   objects.push("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
@@ -2143,21 +2704,73 @@ function buildProjectPdfBlob(project) {
   return new Blob([pdf], { type: "application/pdf" });
 }
 
-function downloadProjectPdf(project) {
-  const blob = buildProjectPdfBlob(project);
+function buildProjectPdfBlob(project) {
+  return buildSimplePdfBlob([
+    "snapPoint — Projekt budowlany",
+    project.title || "Projekt budowlany",
+    (project.description || "Bez opisu").slice(0, 180),
+    `snapPoint · ${formatDate(project.updatedAt || project.createdAt)} · zalacznikow: ${
+      project.files?.length || 0
+    }`,
+  ]);
+}
+
+function buildDocumentPdfBlob(project, doc) {
+  const saved = project.docForms?.[doc.id] || {};
+  const fields = listDocFormFields(doc.id);
+  const lines = [
+    "snapPoint — Dokument do zlozenia",
+    doc.title || "Dokument",
+    `Projekt: ${project.title || "—"}`,
+    `Zrodlo: ${doc.source === "standard" ? "standardowy" : "warunkowy"}`,
+    `Wygenerowano: ${formatDate(new Date().toISOString())}`,
+    "---",
+  ];
+
+  fields.forEach((field) => {
+    const value = String(saved[field.name] || "").trim();
+    lines.push(`${field.label}:`);
+    lines.push(value || "(brak danych — wypelnij formularz)");
+  });
+
+  return buildSimplePdfBlob(lines);
+}
+
+function downloadBlobAsFile(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
-  const safeTitle = (project.title || "projekt-budowlany")
-    .replace(/[^\wąćęłńóśźżĄĆĘŁŃÓŚŹŻ\- ]+/gi, "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .slice(0, 48);
   link.href = url;
-  link.download = `${safeTitle || "projekt-budowlany"}.pdf`;
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function safeDownloadName(value, fallback) {
+  return (
+    String(value || fallback || "dokument")
+      .replace(/[^\wąćęłńóśźżĄĆĘŁŃÓŚŹŻ\- ]+/gi, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .slice(0, 48) || fallback || "dokument"
+  );
+}
+
+function downloadProjectPdf(project) {
+  downloadBlobAsFile(
+    buildProjectPdfBlob(project),
+    `${safeDownloadName(project.title, "projekt-budowlany")}.pdf`
+  );
+}
+
+function downloadDocumentPdf(project, doc) {
+  if (!project || !doc) return;
+  downloadBlobAsFile(
+    buildDocumentPdfBlob(project, doc),
+    `${safeDownloadName(doc.title || doc.id, "dokument")}.pdf`
+  );
+  showTypeToast("Pobrano PDF dokumentu (mock)");
 }
 
 function ensureGenerateModal() {
@@ -2229,6 +2842,7 @@ function bindProjectDetailActions(projectId) {
   content.querySelectorAll('[data-role="open-formal-survey"]').forEach((btn) => {
     btn.addEventListener("click", (event) => {
       event.preventDefault();
+      event.stopPropagation();
       renderView("project-detail", {
         projectId: btn.dataset.projectId || projectId,
         panel: "formal-survey",
@@ -2250,6 +2864,135 @@ function bindProjectDetailActions(projectId) {
       event.preventDefault();
       event.stopPropagation();
       startGenerateProject(btn.dataset.projectId || projectId);
+    });
+  });
+
+  bindProjectAttachmentsFilter();
+  bindProjectDocForms(projectId);
+  bindDocumentPdfDownloads();
+}
+
+function bindDocumentPdfDownloads(root = content) {
+  root.querySelectorAll('[data-role="download-doc-pdf"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const project = getProjectById(btn.dataset.projectId);
+      if (!project) return;
+      const doc = (project.formalSurvey?.documents || []).find(
+        (item) => item.id === btn.dataset.docId
+      );
+      if (!doc) {
+        showTypeToast("Nie znaleziono dokumentu do pobrania");
+        return;
+      }
+      downloadDocumentPdf(project, doc);
+    });
+  });
+}
+
+function bindProjectAttachmentsFilter() {
+  const panel = content.querySelector('[data-role="project-attachments"]');
+  if (!panel) return;
+
+  const nameInput = panel.querySelector('[data-role="filter-attachment-name"]');
+  const categorySelect = panel.querySelector('[data-role="filter-attachment-category"]');
+  const countEl = panel.querySelector('[data-role="attachment-filter-count"]');
+  const emptyEl = panel.querySelector('[data-role="attachment-filter-empty"]');
+  const rows = Array.from(panel.querySelectorAll("tbody tr"));
+
+  const applyFilter = () => {
+    const query = (nameInput?.value || "").trim().toLowerCase();
+    const category = categorySelect?.value || "";
+    let visible = 0;
+
+    rows.forEach((row) => {
+      const name = row.dataset.fileName || "";
+      const rowCategory = row.dataset.fileCategory || "";
+      const matchName = !query || name.includes(query);
+      const matchCategory = !category || rowCategory === category;
+      const show = matchName && matchCategory;
+      row.hidden = !show;
+      if (show) visible += 1;
+    });
+
+    if (countEl) {
+      countEl.textContent =
+        visible === rows.length ? `${rows.length} plików` : `${visible} z ${rows.length} plików`;
+    }
+    if (emptyEl) emptyEl.hidden = visible > 0;
+  };
+
+  nameInput?.addEventListener("input", applyFilter);
+  categorySelect?.addEventListener("change", applyFilter);
+}
+
+function collectDocFormData(form) {
+  const data = {};
+  const docId = form.dataset.docId;
+  if (!docId) return data;
+  const prefix = `${docId}__`;
+  new FormData(form).forEach((value, key) => {
+    if (!key.startsWith(prefix)) return;
+    data[key.slice(prefix.length)] = String(value || "");
+  });
+  return data;
+}
+
+function bindProjectDocForms(projectId) {
+  const project = getProjectById(projectId);
+  if (!project) return;
+
+  content.querySelectorAll(".project-fold-summary .ghost-btn, .project-fold-summary .icon-action-btn, .doc-form-summary-actions button").forEach((btn) => {
+    btn.addEventListener("click", (event) => event.stopPropagation());
+  });
+
+  content.querySelectorAll('[data-role="doc-form"]').forEach((form) => {
+    form.querySelectorAll('[data-role="assist-field"]').forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        runAssist(() => fillFieldSample(btn.dataset.fieldName, project));
+      });
+    });
+
+    form.querySelectorAll('[data-role="assist-section"]').forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const section = btn.closest("details");
+        if (section && !section.open) section.open = true;
+        const parentDoc = form.closest("details.doc-form-item");
+        if (parentDoc && !parentDoc.open) parentDoc.open = true;
+        runAssist(() => fillSectionSample(btn.dataset.section, project));
+      });
+    });
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const current = getProjectById(projectId);
+      if (!current) return;
+      const docId = form.dataset.docId;
+      if (!docId) return;
+      current.docForms = {
+        ...(current.docForms || {}),
+        [docId]: collectDocFormData(form),
+      };
+      current.updatedAt = new Date().toISOString();
+      persistProject(current);
+      showTypeToast("Zapisano formularz dokumentu");
+      renderView("project-detail", { projectId, panel: "overview", focusDocId: docId });
+    });
+  });
+
+  // Whole-document assist on doc item summary
+  content.querySelectorAll("details.doc-form-item > summary [data-role='assist-section']").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const section = btn.closest("details");
+      if (section && !section.open) section.open = true;
+      runAssist(() => fillSectionSample(btn.dataset.section, project));
     });
   });
 }
@@ -2363,6 +3106,93 @@ function bindFormalSurvey(projectId) {
   });
 }
 
+function bindBuildingProjectsFilters() {
+  const panel = content.querySelector('[data-role="building-projects-table"]');
+  if (!panel) return;
+
+  const countEl = panel.querySelector('[data-role="building-filter-count"]');
+  const emptyEl = panel.querySelector('[data-role="building-filter-empty"]');
+  const rows = Array.from(panel.querySelectorAll("tbody tr"));
+
+  const readFilters = () => {
+    const next = {};
+    panel.querySelectorAll('[data-role="filter-building-col"]').forEach((el) => {
+      const key = el.dataset.filterKey;
+      if (!key) return;
+      next[key] = String(el.value || "").trim();
+    });
+    buildingProjectsFilters = next;
+  };
+
+  const applyFilter = () => {
+    readFilters();
+    let visible = 0;
+    rows.forEach((row) => {
+      const match = Object.entries(buildingProjectsFilters).every(([key, raw]) => {
+        if (!raw) return true;
+        const query = raw.toLowerCase();
+        if (["fill", "files", "docs", "docFill"].includes(key)) {
+          const value = Number(
+            row.dataset[
+              key === "docFill"
+                ? "filterDocFill"
+                : key === "fill"
+                  ? "filterFill"
+                  : key === "files"
+                    ? "filterFiles"
+                    : "filterDocs"
+            ] || 0
+          );
+          if (/^\d+$/.test(query)) return value === Number(query);
+          if (/^>=\d+$/.test(query)) return value >= Number(query.slice(2));
+          if (/^<=\d+$/.test(query)) return value <= Number(query.slice(2));
+          if (/^>\d+$/.test(query)) return value > Number(query.slice(1));
+          if (/^<\d+$/.test(query)) return value < Number(query.slice(1));
+          return String(value).includes(query);
+        }
+        if (key === "survey") {
+          return (row.dataset.filterSurvey || "") === query;
+        }
+        const map = {
+          title: row.dataset.filterTitle || "",
+          investor: row.dataset.filterInvestor || "",
+          site: row.dataset.filterSite || "",
+          category: row.dataset.filterCategory || "",
+          plots: row.dataset.filterPlots || "",
+          created: row.dataset.filterCreated || "",
+          updated: row.dataset.filterUpdated || "",
+        };
+        return (map[key] || "").includes(query);
+      });
+      row.hidden = !match;
+      if (match) visible += 1;
+    });
+
+    if (countEl) {
+      countEl.textContent =
+        visible === rows.length
+          ? `${rows.length} projektów`
+          : `${visible} z ${rows.length} projektów`;
+    }
+    if (emptyEl) emptyEl.hidden = visible > 0;
+  };
+
+  panel.querySelectorAll('[data-role="filter-building-col"]').forEach((el) => {
+    el.addEventListener("input", applyFilter);
+    el.addEventListener("change", applyFilter);
+  });
+
+  panel.querySelector('[data-role="clear-building-filters"]')?.addEventListener("click", () => {
+    buildingProjectsFilters = {};
+    panel.querySelectorAll('[data-role="filter-building-col"]').forEach((el) => {
+      el.value = "";
+    });
+    applyFilter();
+  });
+
+  applyFilter();
+}
+
 function bindFormsTables(view) {
   content.querySelectorAll('[data-role="sort-table"]').forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -2407,6 +3237,7 @@ function bindFormsTables(view) {
     });
   });
 
+  if (view === "building-projects") bindBuildingProjectsFilters();
   bindProjectOpeners();
 }
 
@@ -2422,6 +3253,8 @@ function bindProjectOpeners(root = content) {
       el.dataset.role === "preview-building-form" ||
       el.dataset.role === "download-attachment" ||
       el.dataset.role === "sort-table" ||
+      el.dataset.role === "filter-building-col" ||
+      el.dataset.role === "clear-building-filters" ||
       el.dataset.role === "survey-prev" ||
       el.dataset.role === "survey-next" ||
       el.dataset.role === "survey-save"
@@ -2658,15 +3491,17 @@ function renderView(view, options = {}) {
         renderView(el.dataset.view);
       });
     });
-    content.querySelectorAll('[data-role="open-formal-survey"]').forEach((btn) => {
+    content.querySelectorAll('[data-role="open-doc-form"]').forEach((btn) => {
       btn.addEventListener("click", (event) => {
         event.preventDefault();
         renderView("project-detail", {
           projectId: btn.dataset.projectId,
-          panel: "formal-survey",
+          panel: "overview",
+          focusDocId: btn.dataset.docId,
         });
       });
     });
+    bindDocumentPdfDownloads();
     bindProjectOpeners();
   } else if (view === "zalaczniki") {
     content.innerHTML = attachmentsViewHtml();
@@ -2707,7 +3542,9 @@ function renderView(view, options = {}) {
           ? `<p class="save-toast">Ankieta zapisana — dokumenty do złożenia są widoczne w projekcie i w menu.</p>`
           : ""
       }
-      ${projectDetailHtml(project, panel)}
+      ${projectDetailHtml(project, panel, {
+        focusDocId: options.focusDocId || null,
+      })}
     `;
     content.querySelectorAll("[data-view]").forEach((el) => {
       el.addEventListener("click", (event) => {
@@ -2722,6 +3559,12 @@ function renderView(view, options = {}) {
     if (panel === "building-form") bindBuildingForm(project.id);
     if (panel === "formal-survey") bindFormalSurvey(project.id);
     if (panel !== "formal-survey") bindAiChat();
+    if (options.focusDocId) {
+      const target = content.querySelector(
+        `details.doc-form-item[data-doc-id="${options.focusDocId}"]`
+      );
+      target?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   } else {
     content.innerHTML = `
       <section class="placeholder-view">
@@ -2778,9 +3621,36 @@ content.querySelectorAll("[data-view]").forEach((el) => {
 
 hydrateDashboard();
 bindAiChat();
+applySidebarCollapsedState();
 
-menuToggle?.addEventListener("click", openMenu);
+document.querySelectorAll('[data-role="toggle-sidebar-rail"]').forEach((btn) => {
+  btn.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isMobileNav()) return;
+    setSidebarCollapsed(!isSidebarCollapsed());
+  });
+});
+
+document.getElementById("aiChatFab")?.addEventListener("click", () => {
+  setAiChatMinimized(false);
+});
+
+menuToggle?.addEventListener("click", () => {
+  if (isMobileNav()) {
+    if (sidebar.classList.contains("is-open")) closeMenu();
+    else openMenu();
+    return;
+  }
+  setSidebarCollapsed(!isSidebarCollapsed());
+});
+
 backdrop?.addEventListener("click", closeMenu);
+
+window.addEventListener("resize", () => {
+  applySidebarCollapsedState();
+  if (!isMobileNav()) closeMenu();
+});
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
@@ -2802,7 +3672,15 @@ document.addEventListener("keydown", (event) => {
 const THEME_STORAGE_KEY = "snappoint.theme";
 
 function applyTheme(themeId) {
-  const id = themeId === "homeguide" ? "homeguide" : "snappoint";
+  const allowed = new Set([
+    "snappoint",
+    "homeguide",
+    "bluemint",
+    "navyelectric",
+    "royalgold",
+    "brownbeige",
+  ]);
+  const id = allowed.has(themeId) ? themeId : "snappoint";
   if (id === "snappoint") {
     document.documentElement.removeAttribute("data-theme");
   } else {

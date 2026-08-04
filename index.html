@@ -19,49 +19,49 @@
   </head>
   <body>
     <div class="app-shell">
-      <aside class="sidebar" aria-label="Nawigacja główna">
+      <aside class="sidebar" id="appSidebar" aria-label="Nawigacja główna">
         <div class="sidebar-brand">
           <a href="#" class="brand-mark" data-view="dashboard" aria-label="snapPoint — Pulpit">
-            snappoint<span class="dot">.</span>
+            <span class="brand-full">snappoint</span><span class="brand-short" aria-hidden="true">snpp</span><span class="dot">.</span>
           </a>
           <p class="brand-sub">Dokumenty formalne projektu</p>
         </div>
 
         <nav class="sidebar-nav">
           <p class="nav-label">Workspace</p>
-          <a class="nav-item is-active" href="#" data-view="dashboard">
+          <a class="nav-item is-active" href="#" data-view="dashboard" title="Pulpit">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1v-9.5Z" />
               </svg>
             </span>
-            Pulpit
+            <span class="nav-text">Pulpit</span>
           </a>
-          <a class="nav-item" href="#" data-view="building-projects">
+          <a class="nav-item" href="#" data-view="building-projects" title="Dokument projektu bud.">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <path d="M8 4h7l3 3v13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
                 <path d="M15 4v3h3M9 12h6M9 16h4" />
               </svg>
             </span>
-            Dokument projektu bud.
+            <span class="nav-text">Dokument projektu bud.</span>
           </a>
-          <a class="nav-item" href="#" data-view="docs-to-submit">
+          <a class="nav-item" href="#" data-view="docs-to-submit" title="Dokumenty do złożenia">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <path d="M7 4h10a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
                 <path d="M9 9h6M9 13h6M9 17h3" />
               </svg>
             </span>
-            Dokumenty do złożenia
+            <span class="nav-text">Dokumenty do złożenia</span>
           </a>
-          <a class="nav-item" href="#" data-view="zalaczniki">
+          <a class="nav-item" href="#" data-view="zalaczniki" title="Załączniki">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <path d="M15.5 7.5 9.2 13.8a2.5 2.5 0 1 0 3.5 3.5l7.1-7.1a4 4 0 0 0-5.7-5.7L7 11.6" />
               </svg>
             </span>
-            Załączniki
+            <span class="nav-text">Załączniki</span>
           </a>
         </nav>
 
@@ -70,14 +70,35 @@
             Powered by
             <span class="adapto-mark">adapto<span class="dot">.</span></span>
           </p>
+          <button
+            type="button"
+            class="sidebar-rail-toggle desktop-only"
+            data-role="toggle-sidebar-rail"
+            title="Zwiń menu"
+            aria-label="Zwiń menu boczne"
+            aria-expanded="true"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M11 7 6 12l5 5" />
+              <path d="M18 7l-5 5 5 5" />
+            </svg>
+          </button>
         </div>
       </aside>
 
       <div class="main-column">
         <header class="topbar">
           <div class="topbar-left">
-            <button class="icon-btn mobile-only" id="menuToggle" type="button" aria-label="Otwórz menu">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+            <button
+              class="icon-btn sidebar-toggle"
+              id="menuToggle"
+              type="button"
+              aria-label="Ukryj menu"
+              title="Ukryj / pokaż menu"
+              aria-controls="appSidebar"
+              aria-expanded="true"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
                 <path d="M4 7h16M4 12h16M4 17h16" />
               </svg>
             </button>
@@ -106,11 +127,31 @@
               ></button>
               <button
                 type="button"
-                class="theme-swatch theme-swatch-soon"
-                data-theme-id="theme-2"
-                title="Drugi motyw — wkrótce"
-                aria-label="Drugi motyw wkrótce"
-                disabled
+                class="theme-swatch theme-swatch-bluemint"
+                data-theme-id="bluemint"
+                title="Blue & Mint"
+                aria-label="Motyw Blue and Mint"
+              ></button>
+              <button
+                type="button"
+                class="theme-swatch theme-swatch-navyelectric"
+                data-theme-id="navyelectric"
+                title="Navy & Electric"
+                aria-label="Motyw Navy blue and electric blue"
+              ></button>
+              <button
+                type="button"
+                class="theme-swatch theme-swatch-royalgold"
+                data-theme-id="royalgold"
+                title="Royal Blue & Gold"
+                aria-label="Motyw Dark royal blue and gold"
+              ></button>
+              <button
+                type="button"
+                class="theme-swatch theme-swatch-brownbeige"
+                data-theme-id="brownbeige"
+                title="Brown & Beige"
+                aria-label="Motyw Brown and beige"
               ></button>
             </div>
             <div class="search">
@@ -207,7 +248,21 @@
                   <p class="ai-chat-kicker">Asystent</p>
                   <h2>snapPoint AI</h2>
                 </div>
-                <span class="ai-chat-badge">Demo</span>
+                <div class="ai-chat-head-actions">
+                  <span class="ai-chat-badge">Demo</span>
+                  <button
+                    type="button"
+                    class="icon-btn ai-chat-toggle"
+                    data-role="toggle-ai-chat"
+                    title="Minimalizuj czat"
+                    aria-label="Minimalizuj czat AI"
+                    aria-expanded="true"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                      <path d="M9 6l6 6-6 6" />
+                    </svg>
+                  </button>
+                </div>
               </header>
               <div class="ai-chat-messages" id="aiChatMessages"></div>
               <form class="ai-chat-composer" id="aiChatForm">
@@ -226,7 +281,27 @@
     </div>
 
     <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
+    <button
+      type="button"
+      class="ai-chat-fab"
+      id="aiChatFab"
+      data-role="expand-ai-chat"
+      title="Otwórz czat AI"
+      aria-label="Otwórz czat snapPoint AI"
+      hidden
+    >
+      <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
+        <rect x="12" y="14" width="24" height="22" rx="7" fill="currentColor" opacity="0.14" />
+        <rect x="14" y="16" width="20" height="18" rx="6" stroke="currentColor" stroke-width="1.8" />
+        <circle cx="20.5" cy="24" r="2.2" fill="currentColor" />
+        <circle cx="27.5" cy="24" r="2.2" fill="currentColor" />
+        <path d="M21 30h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        <path d="M24 10v4M18 11.5l1.8 2.8M30 11.5l-1.8 2.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+        <circle cx="24" cy="9.2" r="1.5" fill="currentColor" />
+      </svg>
+    </button>
     <script src="survey-engine.js"></script>
+    <script src="doc-forms.js"></script>
     <script src="app.js"></script>
     <script src="tutorial.js"></script>
   </body>
