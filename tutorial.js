@@ -16,7 +16,7 @@ const TUTORIAL_STEPS = [
     id: "create-project",
     view: "dashboard",
     title: "Załóż nowy projekt",
-    body: "Najpierw utwórz projekt. Kliknij duży plus po lewej stronie pulpitu.",
+    body: "Najpierw utwórz projekt. Kliknij przycisk „Dodaj nowy projekt” na stronie głównej.",
     target: ".create-project",
     wait: "view:new-project",
   },

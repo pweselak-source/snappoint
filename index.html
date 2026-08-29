@@ -37,31 +37,46 @@
             </span>
             <span class="nav-text">Pulpit</span>
           </a>
-          <a class="nav-item" href="#" data-view="building-projects" title="Dokument projektu bud.">
+          <a class="nav-item" href="#" data-view="users" title="Użytkownicy">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                <path d="M8 4h7l3 3v13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
-                <path d="M15 4v3h3M9 12h6M9 16h4" />
+                <path d="M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1" />
+                <circle cx="9.5" cy="7.5" r="3" />
+                <path d="M19 19v-1a3.5 3.5 0 0 0-2.5-3.35" />
+                <path d="M16 4.6a3 3 0 0 1 0 5.8" />
               </svg>
             </span>
-            <span class="nav-text">Dokument projektu bud.</span>
+            <span class="nav-text">Użytkownicy</span>
           </a>
-          <a class="nav-item" href="#" data-view="docs-to-submit" title="Dokumenty do złożenia">
+          <a class="nav-item" href="#" data-view="permissions" title="Uprawnienia">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                <path d="M7 4h10a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
-                <path d="M9 9h6M9 13h6M9 17h3" />
+                <path d="M12 3 4.5 6.5v5.2c0 4.4 3.1 7.9 7.5 9.3 4.4-1.4 7.5-4.9 7.5-9.3V6.5L12 3Z" />
+                <path d="m9.5 12 1.7 1.7 3.5-3.6" />
               </svg>
             </span>
-            <span class="nav-text">Dokumenty do złożenia</span>
+            <span class="nav-text">Uprawnienia</span>
           </a>
-          <a class="nav-item" href="#" data-view="zalaczniki" title="Załączniki">
+          <a class="nav-item" href="#" data-view="configuration" title="Konfiguracja">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                <path d="M15.5 7.5 9.2 13.8a2.5 2.5 0 1 0 3.5 3.5l7.1-7.1a4 4 0 0 0-5.7-5.7L7 11.6" />
+                <circle cx="12" cy="12" r="3" />
+                <path d="M12 3.5v2.2M12 18.3v2.2M4.8 6.5l1.6 1.6M17.6 15.9l1.6 1.6M3.5 12h2.2M18.3 12h2.2M4.8 17.5l1.6-1.6M17.6 8.1l1.6-1.6" stroke-linecap="round" />
               </svg>
             </span>
-            <span class="nav-text">Załączniki</span>
+            <span class="nav-text">Konfiguracja</span>
+          </a>
+
+          <p class="nav-label">Konto</p>
+          <a class="nav-item" href="#" data-view="account" title="Zarządzanie kontem">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <rect x="3.5" y="6.5" width="17" height="12" rx="2" />
+                <path d="M3.5 10.5h17" />
+                <path d="M7 14.2h3.2" stroke-linecap="round" />
+              </svg>
+            </span>
+            <span class="nav-text">Zarządzanie kontem</span>
           </a>
         </nav>
 
@@ -153,6 +168,13 @@
                 title="Brown & Beige"
                 aria-label="Motyw Brown and beige"
               ></button>
+              <button
+                type="button"
+                class="theme-swatch theme-swatch-classic"
+                data-theme-id="classic"
+                title="Classic"
+                aria-label="Motyw Classic — czarno-biały"
+              ></button>
             </div>
             <div class="search">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
@@ -161,28 +183,54 @@
               </svg>
               <input type="search" placeholder="Szukaj dokumentu lub projektu…" />
             </div>
-            <div class="avatar" title="Architekt">AK</div>
+            <div class="user-chip" title="Anna Kowalska — Architekt" aria-label="Zalogowany: Anna Kowalska">
+              <span class="avatar">AK</span>
+            </div>
           </div>
         </header>
 
         <main class="content" id="content">
           <section class="workspace-bar panel">
-            <button class="create-project" type="button" data-view="new-project">
-              <span class="create-visual" aria-hidden="true">
-                <span class="plus-mark">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-                    <path d="M12 5v14M5 12h14" />
-                  </svg>
-                </span>
-              </span>
-              <span class="create-copy">
-                <span class="workspace-kicker">Workspace</span>
-                <span class="workspace-title">Pulpit projektów</span>
-                <span class="workspace-desc">
-                  Twórz i prowadź projekty budowlane, ankiety formalne oraz dokumenty do złożenia.
-                </span>
-              </span>
-            </button>
+            <div class="workspace-bar-body">
+              <div class="workspace-actions">
+                <button class="create-project" type="button" data-view="new-project">
+                  <span class="plus-mark">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                      <path d="M12 5v14M5 12h14" />
+                    </svg>
+                    <span class="plus-label">Dodaj nowy projekt</span>
+                  </span>
+                </button>
+                <button
+                  class="tasks-calendar-btn"
+                  type="button"
+                  data-view="tasks-calendar"
+                  title="Kalendarz zadań"
+                >
+                  <span class="plus-mark calendar-mark">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                      <rect x="3.5" y="5" width="17" height="15" rx="2" />
+                      <path d="M8 3.5v3M16 3.5v3M3.5 10h17" />
+                    </svg>
+                    <span class="plus-label">Kalendarz zadań</span>
+                  </span>
+                </button>
+                <button
+                  class="docs-home-btn"
+                  type="button"
+                  data-view="zalaczniki"
+                  title="Załączniki"
+                >
+                  <span class="plus-mark docs-mark">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                      <path d="M8 4h7l3 3v13a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z" />
+                      <path d="M15 4v3h3M9 12h6M9 16h4" />
+                    </svg>
+                    <span class="plus-label">Załączniki</span>
+                  </span>
+                </button>
+              </div>
+            </div>
             <button
               type="button"
               class="clear-mock-icon"
@@ -198,30 +246,11 @@
             </button>
           </section>
 
-          <section class="stats-row">
-            <article class="stat">
-              <p class="stat-value">3</p>
-              <p class="stat-label">Aktywne projekty</p>
-            </article>
-            <article class="stat">
-              <p class="stat-value">12</p>
-              <p class="stat-label">Dokumenty w toku</p>
-            </article>
-            <article class="stat">
-              <p class="stat-value">86%</p>
-              <p class="stat-label">Kompletność formalna</p>
-            </article>
-            <article class="stat">
-              <p class="stat-value">2</p>
-              <p class="stat-label">Do uzupełnienia dziś</p>
-            </article>
-          </section>
-
-          <section class="grid-two">
+          <section class="grid-two dashboard-split">
             <article class="panel recent-projects-panel">
               <div class="panel-head">
                 <h2>Projekty</h2>
-                <a href="#" class="text-link">Zobacz wszystkie</a>
+                <a href="#" class="text-link" data-view="building-projects">Zobacz wszystkie</a>
               </div>
               <div class="recent-projects-body" id="recentProjectsBody">
                 <div class="projects-watermark">
@@ -237,7 +266,7 @@
                     </div>
                   </div>
                   <p class="watermark-title">Brak zapisanych projektów</p>
-                  <p class="watermark-hint">Użyj przycisku +, aby zacząć</p>
+                  <p class="watermark-hint">Użyj „Dodaj nowy projekt”, aby zacząć</p>
                 </div>
               </div>
             </article>
