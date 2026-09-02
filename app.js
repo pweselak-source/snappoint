@@ -681,6 +681,7 @@ function showTypeToast(label) {
     document.body.appendChild(toast);
   }
 
+  toast.classList.remove("is-save-success");
   toast.innerHTML = `
     <span class="type-toast-check" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
@@ -695,6 +696,404 @@ function showTypeToast(label) {
   toastTimer = window.setTimeout(() => {
     toast.classList.remove("is-visible");
   }, 2600);
+}
+
+function showFormSavedToast(message = "Zapisano zmiany") {
+  let toast = document.getElementById("typeToast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "typeToast";
+    toast.className = "type-toast";
+    document.body.appendChild(toast);
+  }
+
+  toast.classList.add("is-save-success");
+  toast.innerHTML = `
+    <span class="type-toast-check" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+        <path d="m5 12 5 5L20 7" />
+      </svg>
+    </span>
+    <span><strong>${escapeHtml(message)}</strong></span>
+  `;
+  toast.classList.add("is-visible");
+
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    toast.classList.remove("is-visible");
+    toast.classList.remove("is-save-success");
+  }, 2800);
+}
+
+/** @type {{ projectId: string, kind: "building" | "doc", docId?: string } | null} */
+let formSaveContext = null;
+/** @type {((event: KeyboardEvent) => void) | null} */
+let formSaveKeyHandler = null;
+/** @type {IntersectionObserver | null} */
+let formSaveInlineObserver = null;
+/** @type {boolean} */
+let formSaveInlineInView = false;
+
+function floppyDiskIconSvg() {
+  return `
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+      <path d="M5.5 4.5h10.2L18.5 7.3V19.5a1 1 0 0 1-1 1h-12a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1Z" />
+      <path d="M8 4.5v4.2h7.2V4.5" stroke-linejoin="round" />
+      <rect x="8.2" y="13.2" width="7.6" height="5.3" rx="0.6" />
+    </svg>`;
+}
+
+function formSaveSubmitButtonHtml() {
+  return `
+    <button
+      type="submit"
+      class="form-save-inline-btn"
+      data-role="form-save-inline"
+      title="Zapisz formularz (F5)"
+      aria-label="Zapisz formularz"
+    >
+      ${floppyDiskIconSvg()}
+    </button>`;
+}
+
+function ensureFormSaveFab() {
+  let fab = document.getElementById("formSaveFab");
+  if (fab) return fab;
+  fab = document.createElement("button");
+  fab.id = "formSaveFab";
+  fab.type = "button";
+  fab.className = "form-save-fab";
+  fab.hidden = true;
+  fab.setAttribute("aria-label", "Zapisz formularz");
+  fab.title = "Zapisz formularz (F5)";
+  fab.innerHTML = floppyDiskIconSvg();
+  fab.addEventListener("click", (event) => {
+    event.preventDefault();
+    triggerActiveFormSave();
+  });
+  document.body.appendChild(fab);
+  return fab;
+}
+
+function getActiveFormRoot() {
+  if (!formSaveContext) return null;
+  if (formSaveContext.kind === "building") {
+    return document.getElementById("buildingProjectForm");
+  }
+  if (formSaveContext.docId) {
+    return (
+      content.querySelector(
+        `[data-role="doc-form"][data-doc-id="${formSaveContext.docId}"]`
+      ) || content.querySelector('[data-role="doc-form"]')
+    );
+  }
+  return content.querySelector('[data-role="doc-form"]');
+}
+
+function countOpenFormSections(root) {
+  if (!root) return 0;
+  return root.querySelectorAll(
+    "details.form-section[open], details.doc-form-section[open]"
+  ).length;
+}
+
+function getInlineFormSaveButton(root = getActiveFormRoot()) {
+  return root?.querySelector('[data-role="form-save-inline"]') || null;
+}
+
+function updateFormSaveFabVisibility() {
+  const fab = document.getElementById("formSaveFab");
+  if (!fab) return;
+  if (!formSaveContext) {
+    fab.hidden = true;
+    return;
+  }
+  const hasOpenSection = countOpenFormSections(getActiveFormRoot()) > 0;
+  // Ukryj zakotwiczoną dyskietkę, gdy widać już przycisk zapisu na dole formularza
+  fab.hidden = !hasOpenSection || formSaveInlineInView;
+}
+
+function disconnectFormSaveInlineObserver() {
+  if (formSaveInlineObserver) {
+    formSaveInlineObserver.disconnect();
+    formSaveInlineObserver = null;
+  }
+  formSaveInlineInView = false;
+}
+
+function observeInlineFormSaveButton(root) {
+  disconnectFormSaveInlineObserver();
+  const inlineBtn = getInlineFormSaveButton(root);
+  if (!inlineBtn || typeof IntersectionObserver === "undefined") {
+    formSaveInlineInView = false;
+    return;
+  }
+
+  formSaveInlineObserver = new IntersectionObserver(
+    (entries) => {
+      const entry = entries[0];
+      formSaveInlineInView = Boolean(entry?.isIntersecting && entry.intersectionRatio > 0);
+      updateFormSaveFabVisibility();
+    },
+    {
+      root: null,
+      threshold: [0, 0.15, 0.5, 1],
+      rootMargin: "0px",
+    }
+  );
+  formSaveInlineObserver.observe(inlineBtn);
+}
+
+function unbindFormSaveChrome() {
+  formSaveContext = null;
+  disconnectFormSaveInlineObserver();
+  const fab = document.getElementById("formSaveFab");
+  if (fab) fab.hidden = true;
+  if (formSaveKeyHandler) {
+    document.removeEventListener("keydown", formSaveKeyHandler);
+    formSaveKeyHandler = null;
+  }
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  const keys = Object.keys(value).sort();
+  return `{${keys
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .join(",")}}`;
+}
+
+function captureActiveFormSnapshot() {
+  if (!formSaveContext) return "";
+  const root = getActiveFormRoot();
+  if (!root) return "";
+  const meta = content.querySelector('[data-role="doc-task-meta"]');
+  const payload = {
+    form:
+      formSaveContext.kind === "building"
+        ? collectBuildingFormData(root)
+        : collectDocFormData(root),
+    description: String(
+      content.querySelector('[data-role="task-description-input"]')?.value || ""
+    ),
+    owner: String(meta?.querySelector('[data-role="task-owner"]')?.value || ""),
+    status: String(meta?.querySelector('[data-role="task-status"]')?.value || ""),
+    start: String(meta?.querySelector('[data-role="task-start"]')?.value || ""),
+    due: String(meta?.querySelector('[data-role="task-due"]')?.value || ""),
+  };
+  return stableStringify(payload);
+}
+
+function markActiveFormClean() {
+  if (!formSaveContext) return;
+  formSaveContext.baseline = captureActiveFormSnapshot();
+}
+
+function isActiveFormDirty() {
+  if (!formSaveContext?.baseline) return false;
+  return captureActiveFormSnapshot() !== formSaveContext.baseline;
+}
+
+function isLeavingFormContext(view, options = {}) {
+  if (!formSaveContext) return false;
+  if (view !== "project-detail") return true;
+  const projectId = String(options.projectId || "");
+  if (projectId && projectId !== String(formSaveContext.projectId)) return true;
+  if (formSaveContext.kind === "building") {
+    return options.panel !== "building-form";
+  }
+  if (formSaveContext.kind === "doc") {
+    return (
+      options.panel !== "doc-form" ||
+      String(options.focusDocId || "") !== String(formSaveContext.docId || "")
+    );
+  }
+  return true;
+}
+
+function persistActiveTaskMetaFromDom() {
+  if (!formSaveContext) return false;
+  const project = getProjectById(formSaveContext.projectId);
+  if (!project) return false;
+  const taskId =
+    formSaveContext.kind === "building"
+      ? "building-project"
+      : String(formSaveContext.docId || "");
+  if (!taskId) return false;
+  const meta = content.querySelector('[data-role="doc-task-meta"]');
+  const description = String(
+    content.querySelector('[data-role="task-description-input"]')?.value || ""
+  ).trim();
+  const ownerId = String(meta?.querySelector('[data-role="task-owner"]')?.value || NO_OWNER.id);
+  const statusId = String(meta?.querySelector('[data-role="task-status"]')?.value || "");
+  const startDate = String(meta?.querySelector('[data-role="task-start"]')?.value || "");
+  const dueDate = String(meta?.querySelector('[data-role="task-due"]')?.value || "");
+  const customTasks = (project.customTasks || []).map((task) =>
+    String(task.id) === String(taskId) ? { ...task, description } : task
+  );
+  const next = {
+    ...project,
+    customTasks,
+    taskDescriptions: { ...(project.taskDescriptions || {}), [taskId]: description },
+    taskOwners: { ...(project.taskOwners || {}), [taskId]: ownerId },
+    taskStartDates: { ...(project.taskStartDates || {}), [taskId]: startDate },
+    taskDueDates: { ...(project.taskDueDates || {}), [taskId]: dueDate },
+    updatedAt: new Date().toISOString(),
+  };
+  if (statusId) {
+    next.taskBoardStatus = { ...(project.taskBoardStatus || {}), [taskId]: statusId };
+  }
+  persistProject(next);
+  return true;
+}
+
+function persistBuildingFormFromDom(projectId) {
+  const form = document.getElementById("buildingProjectForm");
+  const current = getProjectById(projectId);
+  if (!form || !current) return false;
+  current.buildingForm = collectBuildingFormData(form);
+  current.updatedAt = new Date().toISOString();
+  persistProject(current);
+  return true;
+}
+
+function persistDocFormFromDom(projectId, docId) {
+  const form =
+    (docId &&
+      content.querySelector(`[data-role="doc-form"][data-doc-id="${docId}"]`)) ||
+    content.querySelector('[data-role="doc-form"]');
+  const current = getProjectById(projectId);
+  const resolvedDocId = docId || form?.dataset.docId;
+  if (!form || !current || !resolvedDocId) return false;
+  current.docForms = {
+    ...(current.docForms || {}),
+    [resolvedDocId]: collectDocFormData(form),
+  };
+  current.updatedAt = new Date().toISOString();
+  persistProject(current);
+  return true;
+}
+
+function triggerActiveFormSave() {
+  if (!formSaveContext) return false;
+  const { projectId, kind, docId } = formSaveContext;
+  const ok =
+    kind === "building"
+      ? persistBuildingFormFromDom(projectId)
+      : persistDocFormFromDom(projectId, docId);
+  if (!ok) {
+    showTypeToast("Nie udało się zapisać formularza");
+    return false;
+  }
+  persistActiveTaskMetaFromDom();
+  markActiveFormClean();
+  showFormSavedToast("Zapisano zmiany");
+  return true;
+}
+
+/** @type {boolean} */
+let bypassFormDirtyGuard = false;
+
+function ensureUnsavedChangesModal() {
+  let modal = document.getElementById("unsavedChangesModal");
+  if (modal) return modal;
+  modal = document.createElement("div");
+  modal.id = "unsavedChangesModal";
+  modal.className = "category-modal unsaved-changes-modal";
+  modal.hidden = true;
+  modal.innerHTML = `
+    <div class="category-modal-backdrop" data-role="unsaved-cancel"></div>
+    <div class="category-modal-dialog unsaved-changes-dialog" role="dialog" aria-modal="true" aria-labelledby="unsavedChangesTitle">
+      <header class="category-modal-head">
+        <div>
+          <p class="eyebrow">Niezapisane zmiany</p>
+          <h2 id="unsavedChangesTitle">Nie zapisałeś zmian</h2>
+          <p class="category-modal-file">Czy na pewno chcesz wyjść?</p>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-role="unsaved-cancel" aria-label="Anuluj">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" stroke-linecap="round" />
+          </svg>
+        </button>
+      </header>
+      <div class="category-modal-body">
+        <p class="unsaved-changes-copy">
+          Masz niezapisane zmiany w formularzu zadania. Możesz je zapisać przed wyjściem albo odrzucić.
+        </p>
+      </div>
+      <footer class="category-modal-foot unsaved-changes-foot">
+        <button type="button" class="ghost-btn" data-role="unsaved-cancel">Anuluj</button>
+        <button type="button" class="danger-btn" data-role="unsaved-discard">Nie zapisuj</button>
+        <button type="button" class="primary-btn" data-role="unsaved-save-exit">Zapisz i wyjdź</button>
+      </footer>
+    </div>`;
+  document.body.appendChild(modal);
+  return modal;
+}
+
+function closeUnsavedChangesModal() {
+  const modal = document.getElementById("unsavedChangesModal");
+  if (!modal) return;
+  modal.hidden = true;
+  document.body.classList.remove("modal-open");
+  modal.onclick = null;
+}
+
+function openUnsavedChangesModal({ onSaveExit, onDiscard, onCancel }) {
+  const modal = ensureUnsavedChangesModal();
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  modal.onclick = (event) => {
+    if (event.target.closest('[data-role="unsaved-cancel"]')) {
+      event.preventDefault();
+      closeUnsavedChangesModal();
+      onCancel?.();
+      return;
+    }
+    if (event.target.closest('[data-role="unsaved-discard"]')) {
+      event.preventDefault();
+      closeUnsavedChangesModal();
+      onDiscard?.();
+      return;
+    }
+    if (event.target.closest('[data-role="unsaved-save-exit"]')) {
+      event.preventDefault();
+      if (!triggerActiveFormSave()) return;
+      closeUnsavedChangesModal();
+      onSaveExit?.();
+    }
+  };
+}
+
+function bindFormSaveChrome(projectId, kind, docId = "") {
+  unbindFormSaveChrome();
+  formSaveContext = {
+    projectId,
+    kind,
+    ...(kind === "doc" ? { docId: String(docId || "") } : {}),
+    baseline: "",
+  };
+  ensureFormSaveFab();
+
+  const root = getActiveFormRoot();
+  root
+    ?.querySelectorAll("details.form-section, details.doc-form-section")
+    .forEach((section) => {
+      section.addEventListener("toggle", updateFormSaveFabVisibility);
+    });
+  observeInlineFormSaveButton(root);
+  updateFormSaveFabVisibility();
+  markActiveFormClean();
+
+  formSaveKeyHandler = (event) => {
+    if (event.key !== "F5") return;
+    if (!formSaveContext) return;
+    event.preventDefault();
+    event.stopPropagation();
+    triggerActiveFormSave();
+  };
+  document.addEventListener("keydown", formSaveKeyHandler);
 }
 
 function escapeHtml(value) {
@@ -1673,9 +2072,49 @@ function docFormFieldHtml(docId, field, value = "") {
     </div>`;
 }
 
-function docFormItemHtml(project, doc, { open = false, showTaskMeta = true } = {}) {
+function docFormSectionsHtml(project, doc) {
   const saved = project.docForms?.[doc.id] || {};
   const template = resolveDocFormTemplate(doc.id);
+  return template.sections
+    .map(
+      (section, index) => `
+            <details class="form-section doc-form-section" data-doc-section="${escapeHtml(
+              section.key
+            )}" data-doc-id="${escapeHtml(doc.id)}">
+              ${sectionSummaryHtml(
+                String(index + 1).padStart(2, "0"),
+                section.title,
+                section.subtitle,
+                `doc:${doc.id}:${section.key}`
+              )}
+              <div class="section-body">
+                ${section.fields
+                  .map((field) => docFormFieldHtml(doc.id, field, saved[field.name] || ""))
+                  .join("")}
+              </div>
+            </details>`
+    )
+    .join("");
+}
+
+function docFormActionsHtml(project, doc) {
+  return `
+          <div class="form-actions doc-form-actions">
+            <button
+              type="button"
+              class="ghost-btn"
+              data-role="download-doc-pdf"
+              data-project-id="${project.id}"
+              data-doc-id="${escapeHtml(doc.id)}"
+            >
+              Pobierz PDF
+            </button>
+            ${formSaveSubmitButtonHtml()}
+          </div>`;
+}
+
+function docFormItemHtml(project, doc, { open = false, showTaskMeta = true } = {}) {
+  const saved = project.docForms?.[doc.id] || {};
   const fill = countDocFormFill(doc.id, saved);
 
   return `
@@ -1713,38 +2152,8 @@ function docFormItemHtml(project, doc, { open = false, showTaskMeta = true } = {
       <div class="section-body doc-form-body">
         ${showTaskMeta ? documentTaskMetaHtml(project, "survey-doc", doc.id) : ""}
         <form class="doc-mini-form" data-role="doc-form" data-doc-id="${escapeHtml(doc.id)}" autocomplete="off">
-          ${template.sections
-            .map(
-              (section, index) => `
-            <details class="form-section doc-form-section" data-doc-section="${escapeHtml(
-              section.key
-            )}" data-doc-id="${escapeHtml(doc.id)}">
-              ${sectionSummaryHtml(
-                String(index + 1).padStart(2, "0"),
-                section.title,
-                section.subtitle,
-                `doc:${doc.id}:${section.key}`
-              )}
-              <div class="section-body">
-                ${section.fields
-                  .map((field) => docFormFieldHtml(doc.id, field, saved[field.name] || ""))
-                  .join("")}
-              </div>
-            </details>`
-            )
-            .join("")}
-          <div class="form-actions doc-form-actions">
-            <button
-              type="button"
-              class="ghost-btn"
-              data-role="download-doc-pdf"
-              data-project-id="${project.id}"
-              data-doc-id="${escapeHtml(doc.id)}"
-            >
-              Pobierz PDF
-            </button>
-            <button type="submit" class="primary-btn">Zapisz dokument</button>
-          </div>
+          ${docFormSectionsHtml(project, doc)}
+          ${docFormActionsHtml(project, doc)}
         </form>
       </div>
     </details>`;
@@ -2684,9 +3093,9 @@ function collectProjectDocuments(project) {
   return collectProjectTasks(project).filter((task) => task.source === "auto-doc");
 }
 
-function taskDateFieldHtml(project, task, { colId, value, inputRole, openRole, label }) {
+function taskDateControlHtml(project, task, { value, inputRole, openRole, label }) {
   const hasDate = Boolean(value);
-  return `<td data-col="${escapeHtml(colId)}">
+  return `
     <div class="due-date-field ${hasDate ? "has-value" : "is-empty"}" data-role="due-date-field">
       <input
         type="date"
@@ -2710,8 +3119,16 @@ function taskDateFieldHtml(project, task, { colId, value, inputRole, openRole, l
           <path d="M8 3.5v3M16 3.5v3M3.5 9.5h17" stroke-linecap="round" />
         </svg>
       </button>
-    </div>
-  </td>`;
+    </div>`;
+}
+
+function taskDateFieldHtml(project, task, { colId, value, inputRole, openRole, label }) {
+  return `<td data-col="${escapeHtml(colId)}">${taskDateControlHtml(project, task, {
+    value,
+    inputRole,
+    openRole,
+    label,
+  })}</td>`;
 }
 
 function dueDateFieldHtml(project, task) {
@@ -2756,7 +3173,9 @@ function documentPrimaryTaskId(kind, linkId) {
 
 function collectDocumentRelatedTasks(project, kind, linkId) {
   const link = String(linkId);
+  const primaryId = documentPrimaryTaskId(kind, linkId);
   return collectProjectTasks(project).filter((task) => {
+    if (String(task.id) === String(primaryId)) return false;
     if (kind === "building") {
       if (task.kind === "building" || task.id === "building-project") return true;
       return task.linkedDoc?.kind === "building";
@@ -2771,55 +3190,641 @@ function collectDocumentRelatedTasks(project, kind, linkId) {
   });
 }
 
-function documentTaskMetaHtml(project, kind, linkId) {
+function taskOwnerSelectHtml(project, taskId, { className = "owner-select" } = {}) {
+  const current = getTaskOwnerId(project, taskId);
+  return `
+    <select
+      class="${escapeHtml(className)}"
+      data-role="task-owner"
+      data-task-id="${escapeHtml(String(taskId))}"
+      data-project-id="${project.id}"
+      title="Przypisz osobę"
+      aria-label="Właściciel zadania"
+    >
+      ${getTaskOwnerOptions(project)
+        .map(
+          (opt) => `
+        <option value="${escapeHtml(opt.id)}" ${opt.id === current ? "selected" : ""}>
+          ${escapeHtml(opt.name)}
+        </option>`
+        )
+        .join("")}
+    </select>`;
+}
+
+function discussionThreadKey(kind, linkId) {
+  return documentPrimaryTaskId(kind, linkId);
+}
+
+function getTaskDiscussionNotes(project, kind, linkId) {
+  const key = discussionThreadKey(kind, linkId);
+  const list = project?.taskDiscussions?.[key];
+  return Array.isArray(list)
+    ? [...list].sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    : [];
+}
+
+function persistTaskDiscussionNotes(projectId, kind, linkId, notes) {
+  const project = getProjectById(projectId);
+  if (!project) return null;
+  const key = discussionThreadKey(kind, linkId);
+  return persistProject({
+    ...project,
+    taskDiscussions: {
+      ...(project.taskDiscussions || {}),
+      [key]: notes,
+    },
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function refreshDiscussionTriggerCount(projectId, kind, linkId) {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  const count = getTaskDiscussionNotes(project, kind, linkId).length;
+  content.querySelectorAll('[data-role="discussion-trigger"]').forEach((row) => {
+    if (
+      row.dataset.projectId !== String(projectId) ||
+      row.dataset.linkKind !== String(kind) ||
+      row.dataset.linkId !== String(linkId)
+    ) {
+      return;
+    }
+    const countEl = row.querySelector('[data-role="discussion-count"]');
+    if (countEl) countEl.textContent = String(count);
+    const viewBtn = row.querySelector('[data-role="open-discussion-view"]');
+    if (viewBtn) {
+      const disabled = count === 0;
+      viewBtn.disabled = disabled;
+      viewBtn.classList.toggle("is-disabled", disabled);
+      viewBtn.setAttribute("aria-disabled", disabled ? "true" : "false");
+      viewBtn.title = disabled ? "Brak wpisów w Discord" : "Pokaż Discord";
+      viewBtn.setAttribute(
+        "aria-label",
+        disabled ? "Brak wpisów w Discord" : `Pokaż Discord (${count})`
+      );
+    }
+  });
+}
+
+function documentDiscussionTriggerHtml(project, kind, linkId) {
+  const notes = getTaskDiscussionNotes(project, kind, linkId);
+  const count = notes.length;
+  const disabled = count === 0;
+  return `
+    <div
+      class="doc-related-tasks-trigger doc-discussion-trigger"
+      data-role="discussion-trigger"
+      data-project-id="${escapeHtml(project.id)}"
+      data-link-kind="${escapeHtml(kind)}"
+      data-link-id="${escapeHtml(String(linkId))}"
+    >
+      <div class="doc-related-tasks-copy">
+        <span class="doc-task-meta-label">Discord</span>
+        <strong class="doc-related-tasks-count" data-role="discussion-count">${count}</strong>
+      </div>
+      <div class="doc-related-tasks-actions">
+        <button
+          type="button"
+          class="doc-related-search-btn${disabled ? " is-disabled" : ""}"
+          data-role="open-discussion-view"
+          data-project-id="${escapeHtml(project.id)}"
+          data-link-kind="${escapeHtml(kind)}"
+          data-link-id="${escapeHtml(String(linkId))}"
+          ${disabled ? "disabled" : ""}
+          aria-disabled="${disabled ? "true" : "false"}"
+          aria-label="${disabled ? "Brak wpisów w Discord" : `Pokaż Discord (${count})`}"
+          title="${disabled ? "Brak wpisów w Discord" : "Pokaż Discord"}"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" />
+            <path d="m16 16 4 4" stroke-linecap="round" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="doc-related-search-btn doc-related-add-btn"
+          data-role="open-discussion-add"
+          data-project-id="${escapeHtml(project.id)}"
+          data-link-kind="${escapeHtml(kind)}"
+          data-link-id="${escapeHtml(String(linkId))}"
+          aria-label="Dodaj uwagę do Discord"
+          title="Dodaj uwagę"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+    </div>`;
+}
+
+function ensureDiscussionModal() {
+  let modal = document.getElementById("discussionModal");
+  if (modal) return modal;
+
+  modal = document.createElement("div");
+  modal.id = "discussionModal";
+  modal.className = "category-modal discussion-modal";
+  modal.hidden = true;
+  modal.innerHTML = `
+    <div class="category-modal-backdrop" data-role="close-discussion-modal"></div>
+    <div class="category-modal-dialog discussion-dialog" role="dialog" aria-modal="true" aria-labelledby="discussionModalTitle">
+      <header class="category-modal-head">
+        <div>
+          <h2 id="discussionModalTitle">Discord</h2>
+          <p class="category-modal-file" id="discussionModalMeta"></p>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-role="close-discussion-modal" aria-label="Zamknij">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" stroke-linecap="round" />
+          </svg>
+        </button>
+      </header>
+      <div class="category-modal-body" id="discussionModalBody"></div>
+      <footer class="category-modal-foot" id="discussionModalFoot"></footer>
+    </div>`;
+  document.body.appendChild(modal);
+
+  modal.addEventListener("click", (event) => {
+    if (event.target.closest('[data-role="close-discussion-modal"]')) {
+      closeDiscussionModal();
+    }
+  });
+  return modal;
+}
+
+function closeDiscussionModal() {
+  const modal = document.getElementById("discussionModal");
+  if (!modal) return;
+  modal.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function openDiscussionAddModal(projectId, kind, linkId) {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  const user = getCurrentAccountUser();
+  const modal = ensureDiscussionModal();
+  const title = modal.querySelector("#discussionModalTitle");
+  const meta = modal.querySelector("#discussionModalMeta");
+  const body = modal.querySelector("#discussionModalBody");
+  const foot = modal.querySelector("#discussionModalFoot");
+  if (title) title.textContent = "Nowa uwaga";
+  if (meta) meta.textContent = `Autor: ${user.name}`;
+  if (body) {
+    body.innerHTML = `
+      <label class="field">
+        <span class="field-label">Treść uwagi</span>
+        <textarea
+          id="discussionNoteText"
+          rows="5"
+          placeholder="Napisz uwagę do tego zadania…"
+        ></textarea>
+      </label>`;
+  }
+  if (foot) {
+    foot.innerHTML = `
+      <button type="button" class="ghost-btn" data-role="close-discussion-modal">Anuluj</button>
+      <button
+        type="button"
+        class="primary-btn"
+        data-role="save-discussion-note"
+        data-project-id="${escapeHtml(projectId)}"
+        data-link-kind="${escapeHtml(kind)}"
+        data-link-id="${escapeHtml(String(linkId))}"
+      >Dodaj</button>`;
+    foot.querySelector('[data-role="save-discussion-note"]')?.addEventListener("click", () => {
+      const text = String(modal.querySelector("#discussionNoteText")?.value || "").trim();
+      if (!text) {
+        showTypeToast("Wpisz treść uwagi");
+        return;
+      }
+      const notes = getTaskDiscussionNotes(project, kind, linkId);
+      notes.unshift({
+        id: `note-${Date.now()}`,
+        text,
+        authorId: user.id,
+        authorName: user.name,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+      persistTaskDiscussionNotes(projectId, kind, linkId, notes);
+      closeDiscussionModal();
+      refreshDiscussionTriggerCount(projectId, kind, linkId);
+      showFormSavedToast("Dodano uwagę");
+    });
+  }
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  window.setTimeout(() => modal.querySelector("#discussionNoteText")?.focus(), 30);
+}
+
+function openDiscussionViewModal(projectId, kind, linkId) {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  const user = getCurrentAccountUser();
+  const notes = getTaskDiscussionNotes(project, kind, linkId);
+  if (!notes.length) return;
+
+  const modal = ensureDiscussionModal();
+  const title = modal.querySelector("#discussionModalTitle");
+  const meta = modal.querySelector("#discussionModalMeta");
+  const body = modal.querySelector("#discussionModalBody");
+  const foot = modal.querySelector("#discussionModalFoot");
+  if (title) title.textContent = "Discord";
+  if (meta) {
+    meta.textContent = `${notes.length} ${
+      notes.length === 1 ? "uwaga" : notes.length < 5 ? "uwagi" : "uwag"
+    }`;
+  }
+  if (body) {
+    body.innerHTML = `
+      <ul class="discussion-notes-list">
+        ${notes
+          .map((note) => {
+            const mine = String(note.authorId) === String(user.id);
+            const when = note.updatedAt || note.createdAt
+              ? formatDate(note.updatedAt || note.createdAt)
+              : "";
+            return `
+          <li class="discussion-note" data-note-id="${escapeHtml(note.id)}">
+            <div class="discussion-note-head">
+              <strong>${escapeHtml(note.authorName || "Użytkownik")}</strong>
+              <span class="muted">${escapeHtml(when)}</span>
+            </div>
+            <p class="discussion-note-text" data-role="discussion-note-text">${escapeHtml(
+              note.text
+            )}</p>
+            ${
+              mine
+                ? `<div class="discussion-note-actions">
+                     <button type="button" class="ghost-btn table-action-btn" data-role="edit-discussion-note" data-note-id="${escapeHtml(
+                       note.id
+                     )}">Edytuj</button>
+                     <button type="button" class="ghost-btn table-action-btn" data-role="delete-discussion-note" data-note-id="${escapeHtml(
+                       note.id
+                     )}">Usuń</button>
+                   </div>`
+                : ""
+            }
+          </li>`;
+          })
+          .join("")}
+      </ul>`;
+
+    body.querySelectorAll('[data-role="delete-discussion-note"]').forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const noteId = btn.dataset.noteId;
+        const next = getTaskDiscussionNotes(
+          getProjectById(projectId),
+          kind,
+          linkId
+        ).filter((item) => String(item.id) !== String(noteId));
+        persistTaskDiscussionNotes(projectId, kind, linkId, next);
+        refreshDiscussionTriggerCount(projectId, kind, linkId);
+        if (!next.length) {
+          closeDiscussionModal();
+          showFormSavedToast("Usunięto uwagę");
+          return;
+        }
+        openDiscussionViewModal(projectId, kind, linkId);
+        showFormSavedToast("Usunięto uwagę");
+      });
+    });
+
+    body.querySelectorAll('[data-role="edit-discussion-note"]').forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const noteId = btn.dataset.noteId;
+        const item = btn.closest(".discussion-note");
+        const textEl = item?.querySelector('[data-role="discussion-note-text"]');
+        if (!item || !textEl || item.querySelector("textarea")) return;
+        const current = textEl.textContent || "";
+        textEl.hidden = true;
+        const actions = item.querySelector(".discussion-note-actions");
+        if (actions) actions.hidden = true;
+        const editor = document.createElement("div");
+        editor.className = "discussion-note-editor";
+        editor.innerHTML = `
+          <textarea rows="4">${escapeHtml(current)}</textarea>
+          <div class="discussion-note-edit-actions">
+            <button type="button" class="ghost-btn" data-role="cancel-edit-discussion">Anuluj</button>
+            <button type="button" class="primary-btn" data-role="save-edit-discussion">Zapisz</button>
+          </div>`;
+        item.appendChild(editor);
+        editor.querySelector('[data-role="cancel-edit-discussion"]')?.addEventListener("click", () => {
+          openDiscussionViewModal(projectId, kind, linkId);
+        });
+        editor.querySelector('[data-role="save-edit-discussion"]')?.addEventListener("click", () => {
+          const nextText = String(editor.querySelector("textarea")?.value || "").trim();
+          if (!nextText) {
+            showTypeToast("Treść nie może być pusta");
+            return;
+          }
+          const next = getTaskDiscussionNotes(getProjectById(projectId), kind, linkId).map(
+            (note) =>
+              String(note.id) === String(noteId) && String(note.authorId) === String(user.id)
+                ? { ...note, text: nextText, updatedAt: new Date().toISOString() }
+                : note
+          );
+          persistTaskDiscussionNotes(projectId, kind, linkId, next);
+          openDiscussionViewModal(projectId, kind, linkId);
+          showFormSavedToast("Zapisano uwagę");
+        });
+      });
+    });
+  }
+  if (foot) {
+    foot.innerHTML = `
+      <button type="button" class="ghost-btn" data-role="close-discussion-modal">Zamknij</button>
+      <button
+        type="button"
+        class="primary-btn"
+        data-role="discussion-add-from-view"
+        data-project-id="${escapeHtml(projectId)}"
+        data-link-kind="${escapeHtml(kind)}"
+        data-link-id="${escapeHtml(String(linkId))}"
+      >Dodaj uwagę</button>`;
+    foot.querySelector('[data-role="discussion-add-from-view"]')?.addEventListener("click", () => {
+      openDiscussionAddModal(projectId, kind, linkId);
+    });
+  }
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+function documentRelatedTasksTriggerHtml(project, kind, linkId, related) {
+  const count = related.length;
+  const disabled = count === 0;
+  return `
+    <div class="doc-related-tasks-trigger">
+      <div class="doc-related-tasks-copy">
+        <span class="doc-task-meta-label">Zadania powiązane</span>
+        <strong class="doc-related-tasks-count">${count}</strong>
+      </div>
+      <div class="doc-related-tasks-actions">
+        <button
+          type="button"
+          class="doc-related-search-btn${disabled ? " is-disabled" : ""}"
+          data-role="open-related-tasks"
+          data-project-id="${escapeHtml(project.id)}"
+          data-link-kind="${escapeHtml(kind)}"
+          data-link-id="${escapeHtml(String(linkId))}"
+          ${disabled ? "disabled" : ""}
+          aria-disabled="${disabled ? "true" : "false"}"
+          aria-label="${
+            disabled
+              ? "Brak zadań powiązanych"
+              : `Pokaż zadania powiązane (${count})`
+          }"
+          title="${disabled ? "Brak zadań powiązanych" : "Pokaż zadania powiązane"}"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" />
+            <path d="m16 16 4 4" stroke-linecap="round" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="doc-related-search-btn doc-related-add-btn"
+          data-role="open-related-add-task"
+          data-project-id="${escapeHtml(project.id)}"
+          data-link-kind="${escapeHtml(kind)}"
+          data-link-id="${escapeHtml(String(linkId))}"
+          aria-label="Dodaj zadanie powiązane"
+          title="Dodaj zadanie powiązane"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+    </div>`;
+}
+
+function ensureRelatedTasksModal() {
+  let modal = document.getElementById("relatedTasksModal");
+  if (modal) return modal;
+
+  modal = document.createElement("div");
+  modal.id = "relatedTasksModal";
+  modal.className = "category-modal related-tasks-modal";
+  modal.hidden = true;
+  modal.innerHTML = `
+    <div class="category-modal-backdrop" data-role="close-related-tasks-modal"></div>
+    <div class="category-modal-dialog related-tasks-dialog" role="dialog" aria-modal="true" aria-labelledby="relatedTasksModalTitle">
+      <header class="category-modal-head">
+        <div>
+          <h2 id="relatedTasksModalTitle">Zadania powiązane</h2>
+          <p class="category-modal-file" id="relatedTasksModalMeta"></p>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-role="close-related-tasks-modal" aria-label="Zamknij">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" stroke-linecap="round" />
+          </svg>
+        </button>
+      </header>
+      <div class="category-modal-body" id="relatedTasksModalBody"></div>
+      <footer class="category-modal-foot">
+        <button type="button" class="ghost-btn" data-role="close-related-tasks-modal">Zamknij</button>
+      </footer>
+    </div>`;
+  document.body.appendChild(modal);
+
+  modal.addEventListener("click", (event) => {
+    if (event.target.closest('[data-role="close-related-tasks-modal"]')) {
+      closeRelatedTasksModal();
+    }
+  });
+  return modal;
+}
+
+function closeRelatedTasksModal() {
+  const modal = document.getElementById("relatedTasksModal");
+  if (!modal) return;
+  modal.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function openRelatedTaskFromMeta(projectId, taskKind, taskId) {
+  const id = projectId;
+  if (taskKind === "building") {
+    closeRelatedTasksModal();
+    renderView("project-detail", { projectId: id, panel: "building-form" });
+    return;
+  }
+  if (taskKind === "survey-doc") {
+    closeRelatedTasksModal();
+    renderView("project-detail", {
+      projectId: id,
+      panel: "doc-form",
+      focusDocId: taskId,
+    });
+    return;
+  }
+  if (taskKind === "custom") {
+    const project = getProjectById(id);
+    const task = (project?.customTasks || []).find(
+      (item) => String(item.id) === String(taskId)
+    );
+    closeRelatedTasksModal();
+    if (task?.linkedDoc) {
+      openLinkedDocument(id, task.linkedDoc.kind, task.linkedDoc.id);
+      return;
+    }
+    showTypeToast("To zadanie nie ma powiązanego dokumentu");
+  }
+}
+
+function openRelatedTasksModal(projectId, kind, linkId) {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  const related = collectDocumentRelatedTasks(project, kind, linkId);
+  if (!related.length) return;
+
+  const modal = ensureRelatedTasksModal();
+  const meta = modal.querySelector("#relatedTasksModalMeta");
+  const body = modal.querySelector("#relatedTasksModalBody");
+  if (meta) {
+    meta.textContent = `${related.length} ${
+      related.length === 1 ? "zadanie" : related.length < 5 ? "zadania" : "zadań"
+    }`;
+  }
+  if (body) {
+    body.innerHTML = `
+      <ul class="related-tasks-modal-list">
+        ${related
+          .map(
+            (task) => `
+          <li>
+            <button
+              type="button"
+              class="related-tasks-modal-item"
+              data-role="open-related-task"
+              data-project-id="${escapeHtml(project.id)}"
+              data-task-kind="${escapeHtml(task.kind || "")}"
+              data-task-id="${escapeHtml(String(task.id))}"
+            >
+              <span class="related-tasks-modal-main">
+                <strong>${escapeHtml(task.name)}</strong>
+                <em>${escapeHtml(task.typeLabel || task.kind || "Zadanie")} · ${escapeHtml(
+              ownerLabel(project, task.ownerId)
+            )}</em>
+              </span>
+              <span class="related-tasks-modal-go" aria-hidden="true">→</span>
+            </button>
+          </li>`
+          )
+          .join("")}
+      </ul>`;
+
+    body.querySelectorAll('[data-role="open-related-task"]').forEach((btn) => {
+      btn.addEventListener("click", () => {
+        openRelatedTaskFromMeta(
+          btn.dataset.projectId || projectId,
+          btn.dataset.taskKind,
+          btn.dataset.taskId
+        );
+      });
+    });
+  }
+
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+}
+
+/** Góra widoku zadania: 1) tytuł+opis | 2) właściciel+terminy+powiązane */
+function documentTaskSplitHtml(
+  project,
+  kind,
+  linkId,
+  { title = "", eyebrow = "Dokument / zadanie", showTitle = true } = {}
+) {
   const primaryTaskId = documentPrimaryTaskId(kind, linkId);
-  const owner = ownerLabel(project, getTaskOwnerId(project, primaryTaskId));
   const related = collectDocumentRelatedTasks(project, kind, linkId);
   const description = getTaskDescription(project, primaryTaskId);
+  const displayTitle =
+    title || (kind === "building" ? "Projekt budowlany" : "Zadanie");
+  const primaryTask =
+    collectProjectTasks(project).find((task) => String(task.id) === String(primaryTaskId)) || {
+      id: primaryTaskId,
+      dueDate: getTaskDueDate(project, primaryTaskId),
+      startDate: getTaskStartDate(project, primaryTaskId),
+      statusKey: resolveTaskBoardStatus(project, primaryTaskId, 0),
+    };
 
   return `
-    <aside class="doc-task-meta" data-role="doc-task-meta">
-      <div class="doc-task-owner">
-        <span class="doc-task-meta-label">Przypisany właściciel</span>
-        <strong>${escapeHtml(owner)}</strong>
-      </div>
-      <details class="doc-related-tasks">
-        <summary>
-          <span>Zadania związane</span>
-          <span class="tab-count">${related.length}</span>
-        </summary>
+    <div class="doc-task-split" data-role="doc-task-meta">
+      <section class="doc-task-card doc-task-identity" aria-label="Tytuł i opis">
         ${
-          related.length
-            ? `<ul class="doc-related-tasks-list">
-                ${related
-                  .map(
-                    (task) => `
-                  <li>
-                    <span class="doc-related-task-name">${escapeHtml(task.name)}</span>
-                    <span class="doc-related-task-person">${escapeHtml(
-                      ownerLabel(project, task.ownerId)
-                    )}</span>
-                  </li>`
-                  )
-                  .join("")}
-              </ul>`
-            : `<p class="doc-related-tasks-empty">Brak powiązanych zadań.</p>`
+          showTitle
+            ? `<p class="eyebrow">${escapeHtml(eyebrow)}</p>
+               <h2 class="doc-task-title">${escapeHtml(displayTitle)}</h2>`
+            : `<p class="doc-task-meta-label">Opis zadania</p>`
         }
-      </details>
-      <div class="task-description-editor" data-role="task-description-editor">
-        <label class="field">
-          <span class="field-label">Opis</span>
+        <label class="field doc-task-desc-field">
+          ${showTitle ? `<span class="field-label">Opis</span>` : ""}
           <textarea
             class="task-description-input"
             data-role="task-description-input"
             data-task-id="${escapeHtml(String(primaryTaskId))}"
             data-project-id="${project.id}"
-            rows="3"
+            rows="4"
             placeholder="Dodaj opis zadania…"
           >${escapeHtml(description)}</textarea>
         </label>
-      </div>
-    </aside>`;
+      </section>
+
+      <section class="doc-task-card doc-task-assignment" aria-label="Właściciel, terminy i zadania powiązane">
+        <div class="doc-task-owner-block">
+          <span class="doc-task-meta-label">Przypisany właściciel</span>
+          ${taskOwnerSelectHtml(project, primaryTaskId, {
+            className: "owner-select doc-task-owner-select",
+          })}
+          <p class="doc-task-owner-hint">Możesz zmienić osobę odpowiedzialną za to zadanie.</p>
+        </div>
+
+        <div class="doc-task-schedule-block">
+          <div class="doc-task-schedule-field">
+            <span class="doc-task-meta-label">Data rozpoczęcia</span>
+            ${taskDateControlHtml(project, primaryTask, {
+              value: primaryTask.startDate,
+              inputRole: "task-start",
+              openRole: "open-task-start",
+              label: "Data rozpoczęcia",
+            })}
+          </div>
+          <div class="doc-task-schedule-field">
+            <span class="doc-task-meta-label">Data zakończenia</span>
+            ${taskDateControlHtml(project, primaryTask, {
+              value: primaryTask.dueDate,
+              inputRole: "task-due",
+              openRole: "open-task-due",
+              label: "Data zakończenia prac",
+            })}
+          </div>
+          <div class="doc-task-schedule-field doc-task-status-field">
+            <span class="doc-task-meta-label">Status</span>
+            <select
+              class="owner-select status-select doc-task-owner-select"
+              data-role="task-status"
+              data-task-id="${escapeHtml(String(primaryTaskId))}"
+              data-project-id="${project.id}"
+              aria-label="Status zadania"
+            >
+              ${taskStatusOptionsHtml(primaryTask.statusKey)}
+            </select>
+          </div>
+        </div>
+
+        ${documentRelatedTasksTriggerHtml(project, kind, linkId, related)}
+        ${documentDiscussionTriggerHtml(project, kind, linkId)}
+      </section>
+    </div>`;
+}
+
+function documentTaskMetaHtml(project, kind, linkId) {
+  return documentTaskSplitHtml(project, kind, linkId, { showTitle: false });
 }
 
 function kanbanLinkedDocIconHtml(project, task) {
@@ -3782,35 +4787,36 @@ function projectTasksPanelHtml(project, options = {}) {
         <div class="panel-head-tools">
           <button
             type="button"
-            class="tool-btn tool-btn-green add-task-btn"
+            class="tool-btn tool-btn-muted add-task-btn"
             data-role="open-add-task"
             data-project-id="${project.id}"
             title="Dodaj zadanie"
             aria-label="Dodaj zadanie"
           >
-            <span class="tool-btn-plus" aria-hidden="true">+</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+            </svg>
           </button>
           ${
             global
               ? ""
               : `<button
             type="button"
-            class="tool-btn tool-btn-green survey-launch-btn"
+            class="tool-btn tool-btn-muted survey-launch-btn"
             data-role="open-formal-survey"
             data-project-id="${project.id}"
             title="${escapeHtml(surveyTooltip)}"
             aria-label="${escapeHtml(surveyTooltip)}"
           >
-            <span class="tool-btn-plus" aria-hidden="true">+</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
               <path d="M8 4h8a1 1 0 0 1 1 1v15l-5-2.5L7 20V5a1 1 0 0 1 1-1Z" />
-              <path d="M10 9h4M10 13h4" />
+              <path d="M10 9h4M10 13h4" stroke-linecap="round" />
             </svg>
           </button>`
           }
           <button
             type="button"
-            class="tool-btn tool-btn-blue view-mode-btn ${viewMode === "table" ? "is-active" : ""}"
+            class="tool-btn tool-btn-muted view-mode-btn ${viewMode === "table" ? "is-active" : ""}"
             data-role="tasks-table"
             data-project-id="${project.id}"
             title="Widok tabeli"
@@ -3824,7 +4830,7 @@ function projectTasksPanelHtml(project, options = {}) {
           </button>
           <button
             type="button"
-            class="tool-btn tool-btn-blue view-mode-btn ${viewMode === "gantt" ? "is-active" : ""}"
+            class="tool-btn tool-btn-muted view-mode-btn ${viewMode === "gantt" ? "is-active" : ""}"
             data-role="tasks-gantt"
             data-project-id="${project.id}"
             title="Widok Gantta"
@@ -3837,7 +4843,7 @@ function projectTasksPanelHtml(project, options = {}) {
           </button>
           <button
             type="button"
-            class="tool-btn tool-btn-blue view-mode-btn ${viewMode === "kanban" ? "is-active" : ""}"
+            class="tool-btn tool-btn-muted view-mode-btn ${viewMode === "kanban" ? "is-active" : ""}"
             data-role="tasks-kanban"
             data-project-id="${project.id}"
             title="Widok Kanban"
@@ -3852,7 +4858,7 @@ function projectTasksPanelHtml(project, options = {}) {
           </button>
           <button
             type="button"
-            class="tool-btn tool-btn-blue kpa-btn"
+            class="tool-btn tool-btn-muted kpa-btn"
             data-role="open-kpa"
             data-project-id="${project.id}"
             title="KPA — diagramy zadań"
@@ -3864,38 +4870,6 @@ function projectTasksPanelHtml(project, options = {}) {
               <path d="M12 12 6.2 18.4" stroke-linecap="round" />
             </svg>
           </button>
-          <div class="task-bulk-actions" data-role="task-bulk-actions" hidden>
-            <button
-              type="button"
-              class="view-mode-btn is-bulk-action"
-              data-role="bulk-task-due"
-              data-project-id="${project.id}"
-              title="Ustaw daty (od–do) dla zaznaczonych"
-              aria-label="Ustaw daty (od–do) dla zaznaczonych"
-            >
-              <span class="bulk-action-plus" aria-hidden="true">+</span>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
-                <rect x="3.5" y="5" width="17" height="15" rx="2" />
-                <path d="M8 3.5v3M16 3.5v3M3.5 9.5h17" stroke-linecap="round" />
-              </svg>
-            </button>
-            <button
-              type="button"
-              class="view-mode-btn is-bulk-action"
-              data-role="bulk-task-owner"
-              data-project-id="${project.id}"
-              title="Ustaw właściciela dla zaznaczonych"
-              aria-label="Ustaw właściciela dla zaznaczonych"
-            >
-              <span class="bulk-action-plus" aria-hidden="true">+</span>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
-                <circle cx="9" cy="8.5" r="2.6" />
-                <path d="M4.2 17.5c.7-2.4 2.4-3.7 4.8-3.7s4.1 1.3 4.8 3.7" stroke-linecap="round" />
-                <circle cx="16.8" cy="9.2" r="2.1" />
-                <path d="M14.8 17.5c.5-1.6 1.6-2.6 3.2-2.6" stroke-linecap="round" />
-              </svg>
-            </button>
-          </div>
         </div>
       </div>
       ${body}
@@ -4013,20 +4987,62 @@ function docFormPanelHtml(project, doc) {
       </div>`;
   }
 
+  const fill = countDocFormFill(doc.id, project.docForms?.[doc.id] || {});
+
   return `
-    <div class="doc-form-panel" data-project-id="${project.id}">
-      <header class="building-form-head">
-        <div>
-          <p class="eyebrow">Dokument / zadanie</p>
-          <h2>${escapeHtml(doc.title)}</h2>
-          <p class="building-form-lead">Wypełnij pola dokumentu i zapisz postęp zadania.</p>
-        </div>
+    <div class="doc-form-panel doc-task-view" data-project-id="${project.id}">
+      <div class="doc-task-toolbar">
         <button type="button" class="ghost-btn" data-role="close-doc-form" data-project-id="${project.id}">
           Wróć do projektu
         </button>
-      </header>
-      ${documentTaskMetaHtml(project, "survey-doc", doc.id)}
-      ${docFormItemHtml(project, doc, { open: true, showTaskMeta: false })}
+        <p class="doc-task-toolbar-meta muted">
+          ${
+            doc.source === "standard" ? "Dokument standardowy" : "Dokument warunkowy"
+          }
+          · ${fill.filled}/${fill.total} pól · ${fill.percent}%
+        </p>
+      </div>
+
+      ${documentTaskSplitHtml(project, "survey-doc", doc.id, {
+        title: doc.title,
+        eyebrow: "Dokument / zadanie",
+        showTitle: true,
+      })}
+
+      <section class="doc-task-form-region" aria-label="Formularz dokumentu">
+        <header class="doc-task-form-region-head">
+          <div>
+            <p class="eyebrow">Formularz</p>
+            <h3>Sekcje dokumentu</h3>
+            <p class="muted">Domyślnie zwinięte — rozwiń sekcję, aby wypełnić pola.</p>
+          </div>
+          <div class="doc-task-form-region-actions">
+            ${assistButtonHtml(
+              "assist-section",
+              `doc:${doc.id}`,
+              `Wypełnij cały dokument: ${doc.title}`
+            )}
+            <button
+              type="button"
+              class="icon-action-btn doc-download-btn"
+              data-role="download-doc-pdf"
+              data-project-id="${project.id}"
+              data-doc-id="${escapeHtml(doc.id)}"
+              title="Pobierz PDF (mock)"
+              aria-label="Pobierz PDF: ${escapeHtml(doc.title)}"
+            >
+              ${pdfIconSvg(16)}
+              <span>PDF</span>
+            </button>
+          </div>
+        </header>
+        <form class="doc-mini-form doc-task-form" data-role="doc-form" data-doc-id="${escapeHtml(
+          doc.id
+        )}" autocomplete="off">
+          ${docFormSectionsHtml(project, doc)}
+          ${docFormActionsHtml(project, doc)}
+        </form>
+      </section>
     </div>`;
 }
 
@@ -4551,23 +5567,30 @@ function buildingProjectFormHtml(project) {
   };
 
   return `
-    <div class="building-form-wrap" data-project-id="${project.id}">
-      <header class="building-form-head">
-        <div>
-          <p class="eyebrow">Formularz formalny</p>
-          <h2>Projekt budowlany</h2>
-          <p class="building-form-lead">
-            Dane z metryki będą bazą do tomów, rysunków i oświadczeń (§ 7 ust. 2).
-          </p>
-        </div>
+    <div class="building-form-wrap doc-task-view" data-project-id="${project.id}">
+      <div class="doc-task-toolbar">
         <button type="button" class="ghost-btn" data-role="close-building-form" data-project-id="${project.id}">
           Wróć do projektu
         </button>
-      </header>
+        <p class="doc-task-toolbar-meta muted">Formularz formalny · projekt budowlany</p>
+      </div>
 
-      ${documentTaskMetaHtml(project, "building", "building-project")}
+      ${documentTaskSplitHtml(project, "building", "building-project", {
+        title: "Projekt budowlany",
+        eyebrow: "Dokument / zadanie",
+        showTitle: true,
+      })}
 
-      <form id="buildingProjectForm" class="building-form" autocomplete="off">
+      <section class="doc-task-form-region" aria-label="Formularz projektu budowlanego">
+        <header class="doc-task-form-region-head">
+          <div>
+            <p class="eyebrow">Formularz</p>
+            <h3>Sekcje projektu budowlanego</h3>
+            <p class="muted">Domyślnie zwinięte — rozwiń sekcję, aby wypełnić pola.</p>
+          </div>
+        </header>
+
+      <form id="buildingProjectForm" class="building-form doc-task-form" autocomplete="off">
         <details class="form-section" data-section="metryka">
           ${sectionSummaryHtml(
             "01",
@@ -4769,9 +5792,10 @@ function buildingProjectFormHtml(project) {
             ${pdfIconSvg(17)}
             <span>Generuj PDF</span>
           </button>
-          <button type="submit" class="primary-btn">Zapisz formularz</button>
+          ${formSaveSubmitButtonHtml()}
         </div>
       </form>
+      </section>
     </div>`;
 }
 
@@ -4795,7 +5819,7 @@ function projectDetailHtml(project, panel = "overview", options = {}) {
   }
   if (isKpa) mainHtml = projectKpaPanelHtml(project);
 
-  const fullWidth = isSurvey || isDocForm || isKpa;
+  const fullWidth = isSurvey || isDocForm || isKpa || isForm;
 
   return `
     <section class="project-detail">
@@ -5094,6 +6118,7 @@ function runAssist(action) {
     action();
     overlay.hidden = true;
     document.body.classList.remove("modal-open");
+    updateFormSaveFabVisibility();
   }, 1100);
 }
 
@@ -5117,6 +6142,7 @@ function bindBuildingForm(projectId) {
       const section = btn.closest("details");
       if (section && !section.open) section.open = true;
       runAssist(() => fillSectionSample(btn.dataset.section, project));
+      updateFormSaveFabVisibility();
     });
   });
 
@@ -5136,16 +6162,13 @@ function bindBuildingForm(projectId) {
 
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    const current = getProjectById(projectId);
-    if (!current) return;
-    current.buildingForm = collectBuildingFormData(form);
-    current.updatedAt = new Date().toISOString();
-    persistProject(current);
-    showTypeToast("Zapisano formularz projektu budowlanego");
-    renderView("project-detail", { projectId, panel: "building-form", justSavedForm: true });
+    if (persistBuildingFormFromDom(projectId)) {
+      showFormSavedToast("Zapisano zmiany");
+    }
   });
 
   bindTaskDescriptionEditors(projectId);
+  bindFormSaveChrome(projectId, "building");
 }
 
 function pdfEscape(text) {
@@ -5426,6 +6449,61 @@ function bindProjectDetailActions(projectId) {
         btn.dataset.linkKind,
         btn.dataset.linkId,
         { newTab: btn.dataset.openNewTab === "1" }
+      );
+    });
+  });
+
+  content.querySelectorAll('[data-role="open-related-tasks"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (btn.disabled) return;
+      openRelatedTasksModal(
+        btn.dataset.projectId || projectId,
+        btn.dataset.linkKind,
+        btn.dataset.linkId
+      );
+    });
+  });
+
+  content.querySelectorAll('[data-role="open-related-add-task"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const kind = btn.dataset.linkKind;
+      const linkId = btn.dataset.linkId;
+      openAddTaskModal(btn.dataset.projectId || projectId, {
+        linkedKind: kind,
+        linkedId: linkId,
+        returnTo:
+          kind === "building"
+            ? { panel: "building-form" }
+            : { panel: "doc-form", focusDocId: linkId },
+      });
+    });
+  });
+
+  content.querySelectorAll('[data-role="open-discussion-add"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openDiscussionAddModal(
+        btn.dataset.projectId || projectId,
+        btn.dataset.linkKind,
+        btn.dataset.linkId
+      );
+    });
+  });
+
+  content.querySelectorAll('[data-role="open-discussion-view"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (btn.disabled) return;
+      openDiscussionViewModal(
+        btn.dataset.projectId || projectId,
+        btn.dataset.linkKind,
+        btn.dataset.linkId
       );
     });
   });
@@ -6814,33 +7892,45 @@ function bindProjectDocForms(projectId) {
 
     form.addEventListener("submit", (event) => {
       event.preventDefault();
-      const current = getProjectById(projectId);
-      if (!current) return;
       const docId = form.dataset.docId;
       if (!docId) return;
-      current.docForms = {
-        ...(current.docForms || {}),
-        [docId]: collectDocFormData(form),
-      };
-      current.updatedAt = new Date().toISOString();
-      persistProject(current);
-      showTypeToast("Zapisano formularz dokumentu");
-      renderView("project-detail", { projectId, panel: "doc-form", focusDocId: docId });
+      if (persistDocFormFromDom(projectId, docId)) {
+        showFormSavedToast("Zapisano zmiany");
+      }
     });
   });
 
-  // Whole-document assist on doc item summary
-  content.querySelectorAll("details.doc-form-item > summary [data-role='assist-section']").forEach((btn) => {
-    btn.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const section = btn.closest("details");
-      if (section && !section.open) section.open = true;
-      runAssist(() => fillSectionSample(btn.dataset.section, project));
+  // Whole-document assist on doc item summary or task form region header
+  content
+    .querySelectorAll(
+      "details.doc-form-item > summary [data-role='assist-section'], .doc-task-form-region-head [data-role='assist-section']"
+    )
+    .forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const section = btn.closest("details");
+        if (section && !section.open) section.open = true;
+        const key = String(btn.dataset.section || "");
+        const docId = key.startsWith("doc:") ? key.slice(4).split(":")[0] : "";
+        const form = docId
+          ? content.querySelector(`[data-role="doc-form"][data-doc-id="${docId}"]`)
+          : null;
+        form?.querySelectorAll("details.doc-form-section, details.form-section").forEach((block) => {
+          block.open = true;
+        });
+        updateFormSaveFabVisibility();
+        runAssist(() => fillSectionSample(btn.dataset.section, project));
+      });
     });
-  });
 
   bindTaskDescriptionEditors(projectId);
+
+  const dedicatedDocPanel = content.querySelector(".doc-form-panel.doc-task-view");
+  if (dedicatedDocPanel) {
+    const form = dedicatedDocPanel.querySelector('[data-role="doc-form"]');
+    bindFormSaveChrome(projectId, "doc", form?.dataset.docId || "");
+  }
 }
 
 /** @type {{ projectId: string | null, answers: Record<string, string | string[]>, step: number }} */
@@ -7941,11 +9031,20 @@ function bindKpaPanel(projectId) {
   });
 }
 
-function openAddTaskModal(projectId) {
+function openAddTaskModal(projectId, options = {}) {
   const project = getProjectById(projectId);
   if (!project) return;
   const types = getTaskTypes();
   const docOptions = collectLinkedDocumentOptions(project);
+  const presetKind = options.linkedKind || "";
+  const presetId = options.linkedId || "";
+  const presetValue =
+    presetKind && presetId ? `${presetKind}:${presetId}` : "";
+  const presetLabel = presetValue
+    ? docOptions.find((item) => item.value === presetValue)?.name ||
+      resolveLinkedDocLabel(project, { kind: presetKind, id: presetId }) ||
+      "Dokument"
+    : "";
 
   let modal = document.getElementById("addTaskModal");
   if (!modal) {
@@ -7962,7 +9061,9 @@ function openAddTaskModal(projectId) {
       <header class="category-modal-head">
         <div>
           <p class="eyebrow">Nowe zadanie</p>
-          <h2 id="addTaskModalTitle">Dodaj zadanie</h2>
+          <h2 id="addTaskModalTitle">${
+            presetValue ? "Dodaj zadanie powiązane" : "Dodaj zadanie"
+          }</h2>
         </div>
         <button type="button" class="icon-btn modal-close" data-role="close-add-task-modal" aria-label="Zamknij">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
@@ -8061,6 +9162,10 @@ function openAddTaskModal(projectId) {
     modal.querySelector('[data-role="linked-doc-selected"]')?.classList.toggle("has-value", Boolean(value));
   };
 
+  if (presetValue) {
+    setLinkedDocSelection(presetValue, presetLabel);
+  }
+
   modal.onclick = (event) => {
     if (event.target.closest('[data-role="close-add-task-modal"]')) {
       closeAddTaskModal();
@@ -8101,10 +9206,11 @@ function openAddTaskModal(projectId) {
         : null;
       const taskId = `task-${Date.now()}`;
       const firstStatus = getKanbanStatuses()[0]?.id || "todo";
+      const latest = getProjectById(project.id) || project;
       persistProject({
-        ...project,
+        ...latest,
         customTasks: [
-          ...(project.customTasks || []),
+          ...(latest.customTasks || []),
           {
             id: taskId,
             name,
@@ -8117,18 +9223,30 @@ function openAddTaskModal(projectId) {
             updatedAt: new Date().toISOString(),
           },
         ],
-        taskOwners: { ...(project.taskOwners || {}), [taskId]: ownerId },
-        taskDescriptions: { ...(project.taskDescriptions || {}), [taskId]: description },
-        taskStartDates: { ...(project.taskStartDates || {}), [taskId]: startDate },
-        taskDueDates: { ...(project.taskDueDates || {}), [taskId]: dueDate },
+        taskOwners: { ...(latest.taskOwners || {}), [taskId]: ownerId },
+        taskDescriptions: { ...(latest.taskDescriptions || {}), [taskId]: description },
+        taskStartDates: { ...(latest.taskStartDates || {}), [taskId]: startDate },
+        taskDueDates: { ...(latest.taskDueDates || {}), [taskId]: dueDate },
         taskBoardStatus: {
-          ...(project.taskBoardStatus || {}),
+          ...(latest.taskBoardStatus || {}),
           [taskId]: firstStatus,
         },
         updatedAt: new Date().toISOString(),
       });
       closeAddTaskModal();
       showTypeToast(`Dodano zadanie: ${name}`);
+      if (options.returnTo?.panel === "building-form") {
+        renderView("project-detail", { projectId: project.id, panel: "building-form" });
+        return;
+      }
+      if (options.returnTo?.panel === "doc-form") {
+        renderView("project-detail", {
+          projectId: project.id,
+          panel: "doc-form",
+          focusDocId: options.returnTo.focusDocId,
+        });
+        return;
+      }
       setProjectListTab("tasks");
       renderView("project-detail", projectOverviewNav(project.id, { listTab: "tasks" }));
     }
@@ -8746,7 +9864,30 @@ function bindConfigurationView() {
 }
 
 function renderView(view, options = {}) {
+  if (
+    !bypassFormDirtyGuard &&
+    isActiveFormDirty() &&
+    isLeavingFormContext(view, options)
+  ) {
+    openUnsavedChangesModal({
+      onSaveExit: () => {
+        bypassFormDirtyGuard = true;
+        renderView(view, options);
+        bypassFormDirtyGuard = false;
+      },
+      onDiscard: () => {
+        bypassFormDirtyGuard = true;
+        renderView(view, options);
+        bypassFormDirtyGuard = false;
+      },
+      onCancel: () => {},
+    });
+    return;
+  }
+
   closeCategoryModal();
+  closeUnsavedChangesModal();
+  unbindFormSaveChrome();
   const title = titles[view] || "Pulpit";
   pageTitle.textContent = title;
   setActiveNav(view);
@@ -9019,6 +10160,22 @@ window.addEventListener("resize", () => {
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (!document.getElementById("unsavedChangesModal")?.hidden) {
+      closeUnsavedChangesModal();
+      return;
+    }
+    if (document.querySelector('[data-role="theme-menu"]')?.classList.contains("is-open")) {
+      closeThemeMenu();
+      return;
+    }
+    if (!document.getElementById("discussionModal")?.hidden) {
+      closeDiscussionModal();
+      return;
+    }
+    if (!document.getElementById("relatedTasksModal")?.hidden) {
+      closeRelatedTasksModal();
+      return;
+    }
     if (!document.getElementById("generateProjectModal")?.hidden) {
       return;
     }
@@ -9044,6 +10201,26 @@ document.addEventListener("keydown", (event) => {
 
 const THEME_STORAGE_KEY = "snappoint.theme";
 
+function closeThemeMenu() {
+  const menu = document.querySelector('[data-role="theme-menu"]');
+  const toggle = menu?.querySelector('[data-role="theme-menu-toggle"]');
+  const panel = menu?.querySelector('[data-role="theme-menu-panel"]');
+  if (!menu || !toggle || !panel) return;
+  menu.classList.remove("is-open");
+  panel.hidden = true;
+  toggle.setAttribute("aria-expanded", "false");
+}
+
+function openThemeMenu() {
+  const menu = document.querySelector('[data-role="theme-menu"]');
+  const toggle = menu?.querySelector('[data-role="theme-menu-toggle"]');
+  const panel = menu?.querySelector('[data-role="theme-menu-panel"]');
+  if (!menu || !toggle || !panel) return;
+  menu.classList.add("is-open");
+  panel.hidden = false;
+  toggle.setAttribute("aria-expanded", "true");
+}
+
 function applyTheme(themeId) {
   const allowed = new Set([
     "snappoint",
@@ -9053,6 +10230,7 @@ function applyTheme(themeId) {
     "royalgold",
     "brownbeige",
     "classic",
+    "noir",
   ]);
   const id = allowed.has(themeId) ? themeId : "snappoint";
   if (id === "snappoint") {
@@ -9063,9 +10241,10 @@ function applyTheme(themeId) {
   try {
     localStorage.setItem(THEME_STORAGE_KEY, id);
   } catch (e) {}
-  document.querySelectorAll(".theme-swatch[data-theme-id]").forEach((btn) => {
-    if (btn.disabled) return;
-    btn.classList.toggle("is-active", btn.dataset.themeId === id);
+  document.querySelectorAll(".theme-menu-item[data-theme-id]").forEach((btn) => {
+    const active = btn.dataset.themeId === id;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-checked", active ? "true" : "false");
   });
 }
 
@@ -9076,12 +10255,36 @@ function initThemeSwitcher() {
   } catch (e) {}
   applyTheme(saved);
 
-  document.querySelectorAll(".theme-swatch[data-theme-id]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (btn.disabled) return;
+  const menu = document.querySelector('[data-role="theme-menu"]');
+  const toggle = menu?.querySelector('[data-role="theme-menu-toggle"]');
+  if (!menu || !toggle) return;
+
+  toggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (menu.classList.contains("is-open")) closeThemeMenu();
+    else openThemeMenu();
+  });
+
+  menu.querySelectorAll(".theme-menu-item[data-theme-id]").forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
       applyTheme(btn.dataset.themeId);
+      closeThemeMenu();
     });
   });
+
+  document.addEventListener("click", (event) => {
+    if (!menu.classList.contains("is-open")) return;
+    if (event.target.closest('[data-role="theme-menu"]')) return;
+    closeThemeMenu();
+  });
 }
+
+window.addEventListener("beforeunload", (event) => {
+  if (!isActiveFormDirty()) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
 
 initThemeSwitcher();

@@ -125,56 +125,62 @@
           </div>
 
           <div class="topbar-right">
-            <div class="theme-switcher" role="group" aria-label="Motyw kolorystyczny">
+            <div class="theme-menu" data-role="theme-menu">
               <button
                 type="button"
-                class="theme-swatch is-active"
-                data-theme-id="snappoint"
-                title="snapPoint"
-                aria-label="Motyw snapPoint"
-              ></button>
-              <button
-                type="button"
-                class="theme-swatch theme-swatch-homeguide"
-                data-theme-id="homeguide"
-                title="HomeGuide"
-                aria-label="Motyw HomeGuide"
-              ></button>
-              <button
-                type="button"
-                class="theme-swatch theme-swatch-bluemint"
-                data-theme-id="bluemint"
-                title="Blue & Mint"
-                aria-label="Motyw Blue and Mint"
-              ></button>
-              <button
-                type="button"
-                class="theme-swatch theme-swatch-navyelectric"
-                data-theme-id="navyelectric"
-                title="Navy & Electric"
-                aria-label="Motyw Navy blue and electric blue"
-              ></button>
-              <button
-                type="button"
-                class="theme-swatch theme-swatch-royalgold"
-                data-theme-id="royalgold"
-                title="Royal Blue & Gold"
-                aria-label="Motyw Dark royal blue and gold"
-              ></button>
-              <button
-                type="button"
-                class="theme-swatch theme-swatch-brownbeige"
-                data-theme-id="brownbeige"
-                title="Brown & Beige"
-                aria-label="Motyw Brown and beige"
-              ></button>
-              <button
-                type="button"
-                class="theme-swatch theme-swatch-classic"
-                data-theme-id="classic"
-                title="Classic"
-                aria-label="Motyw Classic — czarno-biały"
-              ></button>
+                class="theme-menu-toggle"
+                data-role="theme-menu-toggle"
+                aria-expanded="false"
+                aria-haspopup="true"
+                aria-controls="themeMenuPanel"
+                title="Kolorystyka"
+                aria-label="Wybierz kolorystykę"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                  <path d="M12 3.5a8.5 8.5 0 1 0 0 17h1.1a2.15 2.15 0 0 0 0-4.3H12" stroke-linecap="round" />
+                  <circle cx="7.6" cy="10.2" r="1.05" fill="currentColor" stroke="none" />
+                  <circle cx="10.1" cy="7.4" r="1.05" fill="currentColor" stroke="none" />
+                  <circle cx="13.9" cy="7.4" r="1.05" fill="currentColor" stroke="none" />
+                  <circle cx="16.4" cy="10.2" r="1.05" fill="currentColor" stroke="none" />
+                </svg>
+              </button>
+              <div class="theme-menu-panel" id="themeMenuPanel" data-role="theme-menu-panel" hidden>
+                <p class="theme-menu-title">Kolorystyka</p>
+                <div class="theme-menu-list" role="menu">
+                  <button type="button" class="theme-menu-item is-active" role="menuitemradio" aria-checked="true" data-theme-id="snappoint">
+                    <span class="theme-swatch" aria-hidden="true"></span>
+                    <span>snapPoint</span>
+                  </button>
+                  <button type="button" class="theme-menu-item" role="menuitemradio" aria-checked="false" data-theme-id="homeguide">
+                    <span class="theme-swatch theme-swatch-homeguide" aria-hidden="true"></span>
+                    <span>HomeGuide</span>
+                  </button>
+                  <button type="button" class="theme-menu-item" role="menuitemradio" aria-checked="false" data-theme-id="bluemint">
+                    <span class="theme-swatch theme-swatch-bluemint" aria-hidden="true"></span>
+                    <span>Blue &amp; Mint</span>
+                  </button>
+                  <button type="button" class="theme-menu-item" role="menuitemradio" aria-checked="false" data-theme-id="navyelectric">
+                    <span class="theme-swatch theme-swatch-navyelectric" aria-hidden="true"></span>
+                    <span>Navy &amp; Electric</span>
+                  </button>
+                  <button type="button" class="theme-menu-item" role="menuitemradio" aria-checked="false" data-theme-id="royalgold">
+                    <span class="theme-swatch theme-swatch-royalgold" aria-hidden="true"></span>
+                    <span>Royal &amp; Gold</span>
+                  </button>
+                  <button type="button" class="theme-menu-item" role="menuitemradio" aria-checked="false" data-theme-id="brownbeige">
+                    <span class="theme-swatch theme-swatch-brownbeige" aria-hidden="true"></span>
+                    <span>Brown &amp; Beige</span>
+                  </button>
+                  <button type="button" class="theme-menu-item" role="menuitemradio" aria-checked="false" data-theme-id="classic">
+                    <span class="theme-swatch theme-swatch-classic" aria-hidden="true"></span>
+                    <span>Classic</span>
+                  </button>
+                  <button type="button" class="theme-menu-item" role="menuitemradio" aria-checked="false" data-theme-id="noir">
+                    <span class="theme-swatch theme-swatch-noir" aria-hidden="true"></span>
+                    <span>Noir</span>
+                  </button>
+                </div>
+              </div>
             </div>
             <div class="search">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
