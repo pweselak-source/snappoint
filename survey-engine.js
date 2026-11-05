@@ -198,6 +198,90 @@ function createEmptySurveyAnswers() {
   };
 }
 
+/**
+ * Pełny katalog dokumentów możliwych w systemie (ankieta + projekt budowlany).
+ * @returns {Array<{ id: string, title: string, source: string, group: string, ruleHint?: string }>}
+ */
+function listAllPotentialWorkflowDocuments() {
+  const docs = [
+    {
+      id: "building-project",
+      title: "Projekt budowlany",
+      source: "system",
+      group: "Zawsze w projekcie",
+      ruleHint: "Dokument bazowy snapPoint — niezależny od ankiety",
+    },
+  ];
+
+  SURVEY_STANDARD_DOCUMENTS.forEach((doc) => {
+    docs.push({
+      ...doc,
+      group: "Pakiet pozwolenia na budowę",
+      ruleHint: "Dokument standardowy przy wniosku o PnB",
+    });
+  });
+
+  docs.push(
+    {
+      id: "wz",
+      title: "Wniosek o ustalenie Warunków Zabudowy (WZ)",
+      source: "conditional",
+      group: "Warunkowe z ankiety",
+      ruleHint: "Gdy brak MPZP",
+    },
+    {
+      id: "land-exclusion",
+      title: "Wniosek o wyłączenie gruntów z produkcji rolniczej/leśnej",
+      source: "conditional",
+      group: "Warunkowe z ankiety",
+      ruleHint: "Gdy grunty rolne lub leśne",
+    },
+    {
+      id: "driveway-permit",
+      title: "Wniosek o wydanie zezwolenia na lokalizację zjazdu",
+      source: "conditional",
+      group: "Warunkowe z ankiety",
+      ruleHint: "Gdy budowa/przebudowa zjazdu",
+    }
+  );
+
+  SURVEY_MEDIA_OPTIONS.forEach((option) => {
+    docs.push({
+      id: `media-${option.value}`,
+      title: `Wniosek o wydanie warunków przyłączeniowych — ${option.label}`,
+      source: "conditional",
+      group: "Warunkowe z ankiety",
+      ruleHint: `Gdy wymagane przyłącze: ${option.label}`,
+    });
+  });
+
+  docs.push(
+    {
+      id: "heritage-permit",
+      title: "Wniosek o pozwolenie wojewódzkiego/miejskiego konserwatora zabytków",
+      source: "conditional",
+      group: "Warunkowe z ankiety",
+      ruleHint: "Gdy strefa ochrony konserwatorskiej",
+    },
+    {
+      id: "dsu",
+      title: "Wniosek o wydanie Decyzji o Środowiskowych Uwarunkowaniach (DŚU)",
+      source: "conditional",
+      group: "Warunkowe z ankiety",
+      ruleHint: "Gdy oddziaływanie na środowisko",
+    },
+    {
+      id: "water-permit",
+      title: "Wniosek o pozwolenie wodnoprawne",
+      source: "conditional",
+      group: "Warunkowe z ankiety",
+      ruleHint: "Gdy ingerencja w stosunki wodne",
+    }
+  );
+
+  return docs;
+}
+
 function getSurveyAnsweredCount(answers) {
   return SURVEY_QUESTIONS.filter((question) => {
     const value = answers[question.id];

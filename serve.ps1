@@ -61,6 +61,12 @@ try {
 
     $ext = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
     $res.ContentType = $(if ($mime.ContainsKey($ext)) { $mime[$ext] } else { "application/octet-stream" })
+    # Dev: zawsze świeże HTML/JS/CSS — inaczej poprawki V2 (np. Konfiguracja) nie widać po F5
+    if ($ext -in @(".html", ".js", ".css")) {
+      $res.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+      $res.Headers["Pragma"] = "no-cache"
+      $res.Headers["Expires"] = "0"
+    }
     $bytes = [System.IO.File]::ReadAllBytes($path)
     $res.ContentLength64 = $bytes.Length
     $res.StatusCode = 200

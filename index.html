@@ -5,15 +5,39 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>snapPoint — dokumenty formalne</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.css" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=0.4.0" />
+    <link rel="stylesheet" href="v2/styles.css?v=0.4.0" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-mono/style.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap" />
+    <!-- Motywy V3+ (ta sama struktura co V2, inny wygląd) -->
+    <link rel="stylesheet" href="ui-skins/base.css?v=0.4.0" />
+    <link rel="stylesheet" href="ui-skins/common.css?v=0.4.0" />
+    <link rel="stylesheet" href="v3/theme.css?v=0.4.0" />
+    <link rel="stylesheet" href="v4/theme.css?v=0.4.0" />
+    <link rel="stylesheet" href="v5/theme.css?v=0.4.0" />
     <script>
       (function () {
         try {
+          var uiVersion = localStorage.getItem("snappoint.uiVersion") || "v1";
+          var skin = localStorage.getItem("snappoint.uiSkin") || "";
+          var skins = ["v3", "v4", "v5"];
+          var isNew = uiVersion === "v2";
+          var hasSkin = isNew && skins.indexOf(skin) !== -1;
           var theme = localStorage.getItem("snappoint.theme") || "snappoint";
-          if (theme && theme !== "snappoint") {
+          // Menu „Kolorystyka” (palette) dotyczy tylko Old (V1); New ma V2–V5
+          if (!isNew && theme && theme !== "snappoint") {
             document.documentElement.setAttribute("data-theme", theme);
           }
-        } catch (e) {}
+          document.documentElement.setAttribute(
+            "data-ui-version",
+            isNew ? "v2" : "v1"
+          );
+          if (hasSkin) document.documentElement.setAttribute("data-ui-skin", skin);
+        } catch (e) {
+          document.documentElement.setAttribute("data-ui-version", "v1");
+        }
       })();
     </script>
   </head>
@@ -37,27 +61,18 @@
             </span>
             <span class="nav-text">Pulpit</span>
           </a>
-          <a class="nav-item" href="#" data-view="users" title="Użytkownicy">
+          <a class="nav-item" href="#" data-view="workflow" title="Workflow">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                <path d="M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1" />
-                <circle cx="9.5" cy="7.5" r="3" />
-                <path d="M19 19v-1a3.5 3.5 0 0 0-2.5-3.35" />
-                <path d="M16 4.6a3 3 0 0 1 0 5.8" />
+                <rect x="3.5" y="4" width="7" height="5" rx="1.2" />
+                <rect x="13.5" y="4" width="7" height="5" rx="1.2" />
+                <rect x="8.5" y="15" width="7" height="5" rx="1.2" />
+                <path d="M7 9v2.5h10V9M12 11.5V15" stroke-linecap="round" />
               </svg>
             </span>
-            <span class="nav-text">Użytkownicy</span>
+            <span class="nav-text">Workflow</span>
           </a>
-          <a class="nav-item" href="#" data-view="permissions" title="Uprawnienia">
-            <span class="nav-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-                <path d="M12 3 4.5 6.5v5.2c0 4.4 3.1 7.9 7.5 9.3 4.4-1.4 7.5-4.9 7.5-9.3V6.5L12 3Z" />
-                <path d="m9.5 12 1.7 1.7 3.5-3.6" />
-              </svg>
-            </span>
-            <span class="nav-text">Uprawnienia</span>
-          </a>
-          <a class="nav-item" href="#" data-view="configuration" title="Konfiguracja">
+          <a class="nav-item" href="?v2=configuration" data-view="configuration" title="Konfiguracja">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <circle cx="12" cy="12" r="3" />
@@ -66,9 +81,35 @@
             </span>
             <span class="nav-text">Konfiguracja</span>
           </a>
+          <a class="nav-item is-soon" href="#" data-view="users" title="W przygotowaniu" data-soon="1">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M16 19v-1a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v1" />
+                <circle cx="9.5" cy="7.5" r="3" />
+                <path d="M19 19v-1a3.5 3.5 0 0 0-2.5-3.35" />
+                <path d="M16 4.6a3 3 0 0 1 0 5.8" />
+              </svg>
+            </span>
+            <span class="nav-text-stack">
+              <span class="nav-text">Użytkownicy</span>
+              <span class="nav-soon">w przygotowaniu</span>
+            </span>
+          </a>
+          <a class="nav-item is-soon" href="#" data-view="permissions" title="W przygotowaniu" data-soon="1">
+            <span class="nav-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+                <path d="M12 3 4.5 6.5v5.2c0 4.4 3.1 7.9 7.5 9.3 4.4-1.4 7.5-4.9 7.5-9.3V6.5L12 3Z" />
+                <path d="m9.5 12 1.7 1.7 3.5-3.6" />
+              </svg>
+            </span>
+            <span class="nav-text-stack">
+              <span class="nav-text">Uprawnienia</span>
+              <span class="nav-soon">w przygotowaniu</span>
+            </span>
+          </a>
 
           <p class="nav-label">Konto</p>
-          <a class="nav-item" href="#" data-view="account" title="Zarządzanie kontem">
+          <a class="nav-item is-soon" href="#" data-view="account" title="W przygotowaniu" data-soon="1">
             <span class="nav-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
                 <rect x="3.5" y="6.5" width="17" height="12" rx="2" />
@@ -76,7 +117,10 @@
                 <path d="M7 14.2h3.2" stroke-linecap="round" />
               </svg>
             </span>
-            <span class="nav-text">Zarządzanie kontem</span>
+            <span class="nav-text-stack">
+              <span class="nav-text">Zarządzanie kontem</span>
+              <span class="nav-soon">w przygotowaniu</span>
+            </span>
           </a>
         </nav>
 
@@ -122,9 +166,231 @@
               <span class="crumb-sep">/</span>
               <span class="crumb-current" id="pageTitle">Pulpit</span>
             </div>
+            <button
+              type="button"
+              class="v2-topbar-btn v2-new-project-btn"
+              data-role="v2-new-project"
+              title="Nowy projekt"
+              aria-label="Nowy projekt"
+              hidden
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+              </svg>
+              <span>Nowy projekt</span>
+            </button>
+            <button
+              type="button"
+              class="v2-topbar-btn v2-topbar-icon-btn"
+              data-role="v2-form-back"
+              title="Powrót do projektów"
+              aria-label="Powrót do projektów"
+              hidden
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="v2-topbar-btn v2-topbar-icon-btn v2-save-btn"
+              data-role="v2-form-save"
+              title="Zapisz"
+              aria-label="Zapisz"
+              hidden
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                <path
+                  d="M6.5 4.5h9.2L19.5 8.3v11.2H6.5V4.5Z"
+                  stroke-linejoin="round"
+                />
+                <path d="M9 4.5V9h6.2V4.5" stroke-linecap="round" stroke-linejoin="round" />
+                <path d="M9 14.5h6" stroke-linecap="round" />
+              </svg>
+            </button>
+            <div class="v2-building-tabs" data-role="v2-project-edit-tabs" role="tablist" aria-label="Widok projektu" hidden>
+              <button
+                type="button"
+                class="v2-building-tab is-active"
+                data-role="v2-building-tab"
+                data-tab="project"
+                role="tab"
+                aria-selected="true"
+                aria-pressed="true"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                  <path d="M5 7.5h14M5 12h14M5 16.5h9" stroke-linecap="round" />
+                </svg>
+                <span>Projekt</span>
+              </button>
+              <button
+                type="button"
+                class="v2-building-tab"
+                data-role="v2-building-tab"
+                data-tab="tasks"
+                role="tab"
+                aria-selected="false"
+                aria-pressed="false"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                  <path d="M9 6h11M9 12h11M9 18h11M5 6h.01M5 12h.01M5 18h.01" stroke-linecap="round" />
+                </svg>
+                <span>Zadania</span>
+              </button>
+              <button
+                type="button"
+                class="v2-building-tab"
+                data-role="v2-building-tab"
+                data-tab="permissions"
+                role="tab"
+                aria-selected="false"
+                aria-pressed="false"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                  <path d="M12 3 4.5 6.5v5.2c0 4.6 3.2 7.9 7.5 9.3 4.3-1.4 7.5-4.7 7.5-9.3V6.5L12 3Z" stroke-linejoin="round" />
+                  <path d="M9.5 12.2 11.2 14l3.3-3.6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <span>Uprawnienia</span>
+              </button>
+            </div>
           </div>
 
           <div class="topbar-right">
+            <button
+              type="button"
+              class="topbar-ai-btn"
+              data-role="topbar-ai-btn"
+              title="Otwórz czat AI"
+              aria-label="Otwórz czat AI"
+            >
+              <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
+                <rect x="12" y="14" width="24" height="22" rx="7" fill="currentColor" opacity="0.12" />
+                <rect x="14" y="16" width="20" height="18" rx="6" stroke="currentColor" stroke-width="1.8" />
+                <circle cx="20.5" cy="24" r="2.2" fill="currentColor" />
+                <circle cx="27.5" cy="24" r="2.2" fill="currentColor" />
+                <path d="M21 30h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                <path d="M24 10v4M18 11.5l1.8 2.8M30 11.5l-1.8 2.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+                <circle cx="24" cy="9.2" r="1.5" fill="currentColor" />
+              </svg>
+            </button>
+            <div class="ui-gen-switch" data-role="ui-gen-switch">
+              <button
+                type="button"
+                class="ui-gen-toggle"
+                data-role="ui-gen-toggle"
+                aria-expanded="false"
+                aria-haspopup="true"
+                aria-controls="uiGenPanel"
+                title="Generacja systemu"
+                aria-label="Wybierz generację systemu"
+              >
+                <span data-role="ui-gen-label">Old</span>
+                <svg class="ui-version-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <div
+                class="ui-version-panel"
+                id="uiGenPanel"
+                data-role="ui-gen-panel"
+                role="menu"
+                aria-label="Generacja systemu"
+                hidden
+              >
+                <button
+                  type="button"
+                  class="ui-version-btn is-active"
+                  role="menuitemradio"
+                  data-role="ui-gen"
+                  data-ui-gen="old"
+                  aria-checked="true"
+                  title="Old — stary system (V1)"
+                >
+                  Old
+                </button>
+                <button
+                  type="button"
+                  class="ui-version-btn"
+                  role="menuitemradio"
+                  data-role="ui-gen"
+                  data-ui-gen="new"
+                  aria-checked="false"
+                  title="New — nowy system (kolorystyka V2–V5)"
+                >
+                  New
+                </button>
+              </div>
+            </div>
+            <div class="ui-version-switch" data-role="ui-version-switch" hidden>
+              <button
+                type="button"
+                class="ui-version-toggle"
+                data-role="ui-version-toggle"
+                aria-expanded="false"
+                aria-haspopup="true"
+                aria-controls="uiVersionPanel"
+                title="Kolorystyka New"
+                aria-label="Wybierz kolorystykę V2–V5"
+              >
+                <span data-role="ui-version-label">V2</span>
+                <svg class="ui-version-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M6 9l6 6 6-6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <div
+                class="ui-version-panel"
+                id="uiVersionPanel"
+                data-role="ui-version-panel"
+                role="menu"
+                aria-label="Kolorystyka V2–V5"
+                hidden
+              >
+                <button
+                  type="button"
+                  class="ui-version-btn is-active"
+                  role="menuitemradio"
+                  data-role="ui-version"
+                  data-ui-version="v2"
+                  aria-checked="true"
+                  title="V2 — domyślna kolorystyka New"
+                >
+                  V2
+                </button>
+                <button
+                  type="button"
+                  class="ui-version-btn"
+                  role="menuitemradio"
+                  data-role="ui-version"
+                  data-ui-version="v3"
+                  aria-checked="false"
+                  title="V3 — Pracownia: ciepły papier, terakota"
+                >
+                  V3
+                </button>
+                <button
+                  type="button"
+                  class="ui-version-btn"
+                  role="menuitemradio"
+                  data-role="ui-version"
+                  data-ui-version="v4"
+                  aria-checked="false"
+                  title="V4 — Grafit: chłodna biel, ciemne menu, morska zieleń"
+                >
+                  V4
+                </button>
+                <button
+                  type="button"
+                  class="ui-version-btn"
+                  role="menuitemradio"
+                  data-role="ui-version"
+                  data-ui-version="v5"
+                  aria-checked="false"
+                  title="V5 — Kreślarz nocą: ciemny motyw, bursztyn"
+                >
+                  V5
+                </button>
+              </div>
+            </div>
             <div class="theme-menu" data-role="theme-menu">
               <button
                 type="button"
@@ -315,6 +581,68 @@
       </div>
     </div>
 
+    <div class="v2-shell" id="v2Shell" data-role="v2-shell" hidden>
+      <div class="v2-blank" data-role="v2-root" aria-label="Nowy interfejs V2">
+        <!-- V2: pusta kartka — kod od nowa w v2/ -->
+      </div>
+    </div>
+
+    <button
+      type="button"
+      class="v2-ai-fab"
+      id="v2AiFab"
+      data-role="v2-ai-fab"
+      title="Otwórz czat AI"
+      aria-label="Otwórz czat AI"
+      hidden
+    >
+      <svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
+        <rect x="12" y="14" width="24" height="22" rx="7" fill="currentColor" opacity="0.12" />
+        <rect x="14" y="16" width="20" height="18" rx="6" stroke="currentColor" stroke-width="1.8" />
+        <circle cx="20.5" cy="24" r="2.2" fill="currentColor" />
+        <circle cx="27.5" cy="24" r="2.2" fill="currentColor" />
+        <path d="M21 30h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        <path d="M24 10v4M18 11.5l1.8 2.8M30 11.5l-1.8 2.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
+        <circle cx="24" cy="9.2" r="1.5" fill="currentColor" />
+      </svg>
+    </button>
+
+    <aside
+      class="v2-ai-chat"
+      id="v2AiChat"
+      data-role="v2-ai-chat"
+      aria-label="Czat AI"
+      hidden
+    >
+      <header class="v2-ai-chat-head">
+        <div class="v2-ai-chat-title">
+          <span class="v2-ai-chat-kicker">Asystent</span>
+          <h2>snapPoint AI</h2>
+        </div>
+        <button
+          type="button"
+          class="v2-ai-minimize"
+          data-role="v2-ai-minimize"
+          title="Minimalizuj"
+          aria-label="Minimalizuj czat AI"
+        >
+          <svg viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M2 9.5h8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+          </svg>
+        </button>
+      </header>
+      <div class="v2-ai-chat-messages" data-role="v2-ai-messages"></div>
+      <form class="v2-ai-chat-composer" data-role="v2-ai-form">
+        <input
+          type="text"
+          data-role="v2-ai-input"
+          placeholder="Zapytaj asystenta…"
+          autocomplete="off"
+        />
+        <button type="submit" class="v2-ai-send">Wyślij</button>
+      </form>
+    </aside>
+
     <div class="sidebar-backdrop" id="sidebarBackdrop" hidden></div>
     <button
       type="button"
@@ -335,9 +663,12 @@
         <circle cx="24" cy="9.2" r="1.5" fill="currentColor" />
       </svg>
     </button>
-    <script src="survey-engine.js"></script>
-    <script src="doc-forms.js"></script>
-    <script src="app.js"></script>
-    <script src="tutorial.js"></script>
+    <script src="survey-engine.js?v=0.4.0"></script>
+    <script src="doc-forms.js?v=0.4.0"></script>
+    <script src="task-tree.js?v=0.4.0"></script>
+    <script src="project-flow.js?v=0.4.0"></script>
+    <script src="app.js?v=0.4.0"></script>
+    <script src="tutorial.js?v=0.4.0"></script>
+    <script src="v2/app.js?v=0.4.0"></script>
   </body>
 </html>

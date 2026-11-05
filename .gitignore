@@ -8,3 +8,7 @@ Thumbs.db
 # Local env
 .env
 .env.*
+
+# Local design dumps
+Claude outputs/
+

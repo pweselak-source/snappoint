@@ -387,6 +387,13 @@ function isTutorialAllowedTarget(eventTarget) {
 }
 
 function onTutorialClickCapture(event) {
+  // Sidebar / brand zawsze klikalne — tutorial nie może blokować Konfiguracji / Workflow / Pulpitu
+  if (
+    event.target instanceof Element &&
+    event.target.closest("#appSidebar .nav-item, #appSidebar .brand-mark, .brand-mark")
+  ) {
+    return;
+  }
   if (tutorialState.offerOpen) {
     if (event.target.closest("#tutorialOfferModal")) return;
     event.preventDefault();

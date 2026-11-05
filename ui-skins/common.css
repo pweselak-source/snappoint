@@ -1,0 +1,280 @@
+/**
+ * snapPoint — wspólna warstwa motywów V3+ (pisana ręcznie).
+ * Działa razem z ui-skins/base.css (wygenerowaną z V2). Motyw (v3/theme.css …)
+ * definiuje wyłącznie tokeny --sk-*; tu tokeny są podpinane do zmiennych V2/V1
+ * i do elementów „chrome” (sidebar, topbar, zakładki, przełącznik wersji).
+ * Struktura, układ i funkcje są te same co w V2 — zmienia się tylko wygląd.
+ */
+
+/* ---------- Mostek tokenów: --sk-* → zmienne V2 i V1 ---------- */
+html[data-ui-version="v2"][data-ui-skin] {
+  --v2-canvas: var(--sk-canvas);
+  --v2-sidebar: var(--sk-sidebar);
+  --v2-panel: var(--sk-panel);
+  --v2-panel-2: var(--sk-panel-2);
+  --v2-hover: var(--sk-hover);
+  --v2-border: var(--sk-border);
+  --v2-border-strong: var(--sk-border-strong);
+  --v2-text: var(--sk-text);
+  --v2-text-muted: var(--sk-text-muted);
+  --v2-text-dim: var(--sk-text-dim);
+  --v2-input: var(--sk-input);
+  --v2-accent: var(--sk-accent);
+  --v2-accent-ink: var(--sk-accent-ink);
+
+  /* zmienne V1 używane przez sidebar/topbar */
+  --font: var(--sk-font);
+  --mono: var(--sk-font-mono);
+  --text: var(--sk-text);
+  --text-muted: var(--sk-text-muted);
+  --text-dim: var(--sk-text-dim);
+  --brand-text: var(--sk-text);
+  --border: var(--sk-border);
+  --teal-300: var(--sk-accent);
+  --teal-400: var(--sk-accent);
+  --teal-500: var(--sk-accent);
+  --primary-end: var(--sk-accent);
+  --primary-ink: var(--sk-accent-ink);
+  --nav-active-bg: var(--sk-nav-active-bg);
+  --nav-active-ring: transparent;
+  --color-scheme: var(--sk-scheme);
+  color-scheme: var(--sk-scheme);
+  background: var(--sk-canvas);
+}
+
+html[data-ui-version="v2"][data-ui-skin] body {
+  background: var(--sk-canvas);
+  color: var(--sk-text);
+  font-family: var(--sk-font);
+  -webkit-font-smoothing: antialiased;
+}
+html[data-ui-version="v2"][data-ui-skin] :is(button, input, select, textarea) {
+  font-family: inherit;
+}
+html[data-ui-version="v2"][data-ui-skin] ::selection {
+  background: var(--sk-accent-soft);
+  color: var(--sk-accent-soft-ink);
+}
+
+/* Fokus z klawiatury — widoczny pierścień w kolorze akcentu */
+html[data-ui-version="v2"][data-ui-skin] :is(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--sk-focus) !important;
+  outline-offset: 2px;
+}
+
+/* ---------- Powłoka ---------- */
+html[data-ui-version="v2"][data-ui-skin] .app-shell,
+html[data-ui-version="v2"][data-ui-skin] .main-column,
+html[data-ui-version="v2"][data-ui-skin] .v2-shell,
+html[data-ui-version="v2"][data-ui-skin] .v2-blank {
+  background: var(--sk-canvas) !important;
+  color: var(--sk-text);
+}
+html[data-ui-version="v2"][data-ui-skin] .topbar {
+  background: var(--sk-topbar) !important;
+  border-bottom: 1px solid var(--sk-border) !important;
+}
+
+/* ---------- Sidebar ---------- */
+html[data-ui-version="v2"][data-ui-skin] .sidebar {
+  background: var(--sk-sidebar) !important;
+  border-right: 1px solid var(--sk-sidebar-border) !important;
+  color: var(--sk-sidebar-text) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .brand-mark,
+html[data-ui-version="v2"][data-ui-skin] .brand-full,
+html[data-ui-version="v2"][data-ui-skin] .brand-short {
+  color: var(--sk-sidebar-strong) !important;
+  font-family: var(--sk-font-brand);
+  font-weight: var(--sk-brand-weight);
+  letter-spacing: var(--sk-brand-tracking);
+}
+html[data-ui-version="v2"][data-ui-skin] .brand-mark .dot,
+html[data-ui-version="v2"][data-ui-skin] .adapto-mark .dot {
+  color: var(--sk-accent-on-sidebar) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .adapto-mark {
+  color: var(--sk-sidebar-strong) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .brand-sub,
+html[data-ui-version="v2"][data-ui-skin] .nav-label,
+html[data-ui-version="v2"][data-ui-skin] .sidebar-footer,
+html[data-ui-version="v2"][data-ui-skin] .powered-by {
+  color: var(--sk-sidebar-muted) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .nav-item {
+  color: var(--sk-sidebar-text) !important;
+  border-radius: var(--sk-r-md) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .nav-item:hover {
+  background: var(--sk-sidebar-hover) !important;
+  color: var(--sk-sidebar-strong) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .nav-item.is-active {
+  background: var(--sk-nav-active-bg) !important;
+  color: var(--sk-nav-active-ink) !important;
+  box-shadow: none !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .nav-item.is-soon,
+html[data-ui-version="v2"][data-ui-skin] .nav-soon {
+  color: var(--sk-sidebar-muted) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .sidebar-rail-toggle {
+  background: var(--sk-sidebar-hover) !important;
+  color: var(--sk-sidebar-strong) !important;
+  border-color: var(--sk-sidebar-border) !important;
+}
+
+/* ---------- Przełącznik wersji (V1/V2/V3…) ---------- */
+html[data-ui-version="v2"][data-ui-skin] .topbar-ai-btn {
+  background: var(--sk-panel-2);
+  border: 1px solid var(--sk-border);
+  border-radius: var(--sk-r-md);
+  color: var(--sk-text-muted);
+}
+html[data-ui-version="v2"][data-ui-skin] .topbar-ai-btn:hover,
+html[data-ui-version="v2"][data-ui-skin] .topbar-ai-btn.is-active {
+  color: var(--sk-text);
+  border-color: var(--sk-accent);
+  background: var(--sk-panel);
+}
+html[data-ui-version="v2"][data-ui-skin] .ui-gen-toggle,
+html[data-ui-version="v2"][data-ui-skin] .ui-version-toggle {
+  background: var(--sk-panel-2);
+  border: 1px solid var(--sk-border);
+  border-radius: var(--sk-r-md);
+  color: var(--sk-text-muted);
+}
+html[data-ui-version="v2"][data-ui-skin] .ui-gen-toggle:hover,
+html[data-ui-version="v2"][data-ui-skin] .ui-gen-switch.is-open .ui-gen-toggle,
+html[data-ui-version="v2"][data-ui-skin] .ui-version-toggle:hover,
+html[data-ui-version="v2"][data-ui-skin] .ui-version-switch.is-open .ui-version-toggle {
+  color: var(--sk-text);
+  border-color: var(--sk-accent);
+  background: var(--sk-panel);
+}
+html[data-ui-version="v2"][data-ui-skin] .ui-version-panel {
+  background: var(--sk-panel);
+  border: 1px solid var(--sk-border);
+  border-radius: var(--sk-r-md);
+  box-shadow: var(--sk-shadow, 0 10px 28px rgba(0, 0, 0, 0.18));
+}
+html[data-ui-version="v2"][data-ui-skin] .ui-version-btn {
+  color: var(--sk-text-muted);
+  background: transparent;
+  border-radius: var(--sk-r-sm);
+}
+html[data-ui-version="v2"][data-ui-skin] .ui-version-btn:hover {
+  color: var(--sk-text);
+  background: var(--sk-panel-2);
+}
+html[data-ui-version="v2"][data-ui-skin] .ui-version-btn.is-active {
+  background: var(--sk-accent) !important;
+  color: var(--sk-accent-ink) !important;
+}
+/* New (V2+): kolorystyka to V2–V5; stara paleta tylko w Old */
+html[data-ui-version="v2"] .theme-menu {
+  display: none !important;
+}
+
+/* ---------- Zakładki: aktywna podkreślona akcentem ---------- */
+html[data-ui-version="v2"][data-ui-skin] .v2-home-tab.is-active,
+html[data-ui-version="v2"][data-ui-skin] .v2-config-tab.is-active {
+  color: var(--sk-text) !important;
+  border-bottom-color: var(--sk-accent) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .v2-building-tabs [data-role="v2-building-tab"].is-active,
+html[data-ui-version="v2"][data-ui-skin] .v2-building-tab.is-active {
+  color: var(--sk-text) !important;
+  background: transparent !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .v2-building-tab.is-active::after {
+  background: var(--sk-accent) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .v2-tasks-view-btn.is-active,
+html[data-ui-version="v2"][data-ui-skin] .v2-gantt-scale-btn.is-active {
+  background: var(--sk-panel) !important;
+  color: var(--sk-text) !important;
+  box-shadow: inset 0 -2px 0 var(--sk-accent) !important;
+}
+
+/* ---------- Typografia nagłówków ---------- */
+html[data-ui-version="v2"][data-ui-skin] :is(.v2-projects-title, .v2-config-head h2, .v2-tasks-head-copy h2, .v2-tasks-head-copy h1) {
+  font-family: var(--sk-font-display);
+  font-weight: var(--sk-display-weight);
+  letter-spacing: var(--sk-display-tracking);
+  color: var(--sk-text);
+}
+html[data-ui-version="v2"][data-ui-skin] :is(.v2-form-section-title, .v2-task-sheet-title) {
+  font-family: var(--sk-font-section);
+  font-weight: var(--sk-section-weight);
+  color: var(--sk-text);
+}
+
+/* Pasek zakładek projektu — bez tła, tylko podkreślenie */
+html[data-ui-version="v2"][data-ui-skin] .v2-building-tabs {
+  background: transparent !important;
+  border-color: transparent !important;
+}
+
+/* Panele: kreska zamiast ciężkiego cienia */
+html[data-ui-version="v2"][data-ui-skin] :is(.v2-projects, .v2-panel, .v2-form-section, .v2-doc-work-panel, .v2-config, .v2-tasks-panel, .v2-formal-rail) {
+  box-shadow: var(--sk-shadow-panel) !important;
+  border-color: var(--sk-border) !important;
+  border-radius: var(--sk-r-lg) !important;
+}
+
+/* Liczby, kody i daty — cyfry tabelaryczne */
+html[data-ui-version="v2"][data-ui-skin] :is(.v2-excel td, .v2-tasks-table td, .v2-docs-table td, .v2-gantt-scale, .v2-fill-pct) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Główne przyciski (akcent) ---------- */
+html[data-ui-version="v2"][data-ui-skin] :is(.v2-file-modal-confirm, .v2-survey-primary, .v2-ai-send, .form-save-fab, .v2-doc-actions .form-save-inline-btn) {
+  background: var(--sk-accent) !important;
+  border-color: var(--sk-accent) !important;
+  color: var(--sk-accent-ink) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] :is(.v2-file-modal-confirm, .v2-survey-primary, .v2-ai-send, .form-save-fab, .v2-doc-actions .form-save-inline-btn):hover {
+  background: var(--sk-accent-hover) !important;
+  border-color: var(--sk-accent-hover) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .v2-new-project-btn {
+  background: var(--sk-accent) !important;
+  border-color: var(--sk-accent) !important;
+  color: var(--sk-accent-ink) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .v2-new-project-btn:hover {
+  background: var(--sk-accent-hover) !important;
+  border-color: var(--sk-accent-hover) !important;
+}
+
+/* Pola: obramowanie kontrolki (≥3:1) i fokus akcentem */
+html[data-ui-version="v2"][data-ui-skin] :is(.v2-field input, .v2-field select, .v2-field textarea, .v2-col-filter, .v2-task-date-input, .v2-ai-chat-composer input) {
+  border-color: var(--sk-control);
+  background: var(--sk-input);
+  color: var(--sk-text);
+}
+html[data-ui-version="v2"][data-ui-skin] :is(.v2-field input, .v2-field select, .v2-field textarea, .v2-col-filter, .v2-task-date-input, .v2-ai-chat-composer input):focus {
+  border-color: var(--sk-focus) !important;
+  box-shadow: 0 0 0 3px var(--sk-accent-soft);
+}
+html[data-ui-version="v2"][data-ui-skin] :is(input, textarea)::placeholder {
+  color: var(--sk-text-dim);
+}
+
+/* Zaznaczenie wiersza / zadanie w fokusie — miękki akcent */
+html[data-ui-version="v2"][data-ui-skin] body.is-v2-task-focus .v2-task-row.is-active-task td {
+  background: var(--sk-accent-soft) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] body.is-v2-task-focus .v2-task-row.is-active-task .v2-task-title-link {
+  color: var(--sk-accent-soft-ink) !important;
+}
+html[data-ui-version="v2"][data-ui-skin] .v2-gantt-today {
+  background: var(--sk-accent) !important;
+}
+
+/* Cienie warstw pływających */
+html[data-ui-version="v2"][data-ui-skin] :is(.v2-modal-dialog, .v2-file-modal-dialog, .v2-survey-dialog, .v2-cols-menu, .v2-dep-context-menu, .v2-ai-chat, .v2-toast) {
+  box-shadow: var(--sk-shadow-pop) !important;
+}

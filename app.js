@@ -10,6 +10,7 @@ const titles = {
   users: "Użytkownicy",
   permissions: "Uprawnienia",
   configuration: "Konfiguracja",
+  workflow: "Workflow",
   account: "Zarządzanie kontem",
   checklist: "Checklista formalna",
 };
@@ -19,10 +20,11 @@ const descriptions = {
   projects: "Lista projektów inwestycyjnych pojawi się w kolejnym kroku mockupu.",
   "docs-to-submit": "Dokumenty urzędowe wygenerowane z ankiet formalnych projektów.",
   zalaczniki: "Załączniki ze wszystkich projektów na tym koncie.",
-  "tasks-calendar": "Wszystkie zadania z projektów — tabela, Gantt i Kanban z filtrami.",
+  "tasks-calendar": "Lista wszystkich zadań z projektów — z filtrowaniem.",
   users: "Zarządzanie użytkownikami konta — wkrótce.",
   permissions: "Role i uprawnienia dostępu — wkrótce.",
   configuration: "Statusy Kanban i typy zadań.",
+  workflow: "Rozdzielne ścieżki procesów wokół dokumentów systemu.",
   account: "Plan, płatności, zużycie tokenów AI i przestrzeni na załączniki.",
   checklist: "Checklista kompletności dokumentów — wyłączona w tej wersji mockupu.",
 };
@@ -171,9 +173,8 @@ function applyAiChatMinimizedState() {
     btn.setAttribute("aria-label", "Minimalizuj czat AI");
   });
   const fab = document.getElementById("aiChatFab");
-  if (fab) {
-    fab.hidden = !(minimized && chats.length > 0);
-  }
+  // FAB zastąpiony przyciskiem robota w topbarze — zawsze ukryty
+  if (fab) fab.hidden = true;
 }
 
 /** @type {{ id: string, name: string, size: number, categoryId: string }[]} */
@@ -227,23 +228,49 @@ function getDefaultTaskOwnerId() {
   return NO_OWNER.id;
 }
 
-function getTaskOwnerId(project, taskId) {
+function getTaskOwnerId(project, taskId, seen = null) {
   const saved = project?.taskOwners?.[taskId];
   if (saved === "" || saved === NO_OWNER.id) return NO_OWNER.id;
   if (saved && getTaskOwnerOptions(project).some((opt) => opt.id === saved)) {
     return saved;
   }
+  const visited = seen || new Set();
+  if (visited.has(String(taskId))) return getDefaultTaskOwnerId();
+  visited.add(String(taskId));
+  const parentId = typeof getTaskParentId === "function" ? getTaskParentId(project, taskId) : null;
+  if (parentId) return getTaskOwnerId(project, parentId, visited);
   return getDefaultTaskOwnerId();
 }
 
 function getTaskDueDate(project, taskId) {
-  const value = project?.taskDueDates?.[taskId];
+  const id = String(taskId ?? "");
+  if (!id) return "";
+  const map = project?.taskDueDates || {};
+  const value = map[id] ?? map[taskId];
   return typeof value === "string" ? value : "";
 }
 
 function getTaskStartDate(project, taskId) {
-  const value = project?.taskStartDates?.[taskId];
+  const id = String(taskId ?? "");
+  if (!id) return "";
+  const map = project?.taskStartDates || {};
+  const value = map[id] ?? map[taskId];
   return typeof value === "string" ? value : "";
+}
+
+/** Automatyczne wyliczanie dat (domyślnie wyłączone — użytkownik ustawia na Gancie). */
+function isProjectAutoScheduleEnabled(project) {
+  return Boolean(project?.autoScheduleDates);
+}
+
+function setProjectAutoScheduleDates(projectId, enabled) {
+  const project = getProjectById(projectId);
+  if (!project) return null;
+  return persistProject({
+    ...project,
+    autoScheduleDates: Boolean(enabled),
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 function getTaskDescription(project, taskId) {
@@ -251,6 +278,26 @@ function getTaskDescription(project, taskId) {
   if (typeof saved === "string") return saved;
   const custom = (project?.customTasks || []).find((item) => String(item.id) === String(taskId));
   return typeof custom?.description === "string" ? custom.description : "";
+}
+
+function getTaskNotes(project, taskId) {
+  const bag = project?.taskNotes || {};
+  const key = String(taskId ?? "");
+  const saved = bag[key] ?? bag[taskId];
+  return typeof saved === "string" ? saved : "";
+}
+
+function persistTaskNotes(projectId, taskId, notes) {
+  const project = getProjectById(projectId);
+  if (!project || !taskId) return null;
+  return persistProject({
+    ...project,
+    taskNotes: {
+      ...(project.taskNotes || {}),
+      [String(taskId)]: String(notes || ""),
+    },
+    updatedAt: new Date().toISOString(),
+  });
 }
 
 function persistTaskDescription(projectId, taskId, description) {
@@ -314,13 +361,68 @@ function persistTaskBoardStatus(projectId, taskId, statusId) {
   if (!project || !taskId) return null;
   const valid = new Set(getKanbanStatuses().map((item) => item.id));
   if (!valid.has(statusId)) return null;
-  return persistProject({
+
+  const flowTasks = project.flowInstance?.tasks || [];
+  const customTasks = project.customTasks || [];
+  const all = [...flowTasks, ...customTasks];
+  let ids = collectDescendantTaskIds(all, taskId);
+  if (!all.some((task) => String(task.id) === String(taskId))) {
+    ids = collectDescendantTaskIds(collectProjectTasks(project), taskId);
+  }
+
+  const board = { ...(project.taskBoardStatus || {}) };
+  ids.forEach((id) => {
+    board[id] = statusId;
+  });
+
+  const next = persistProject({
     ...project,
-    taskBoardStatus: {
-      ...(project.taskBoardStatus || {}),
-      [taskId]: statusId,
-    },
+    taskBoardStatus: board,
     updatedAt: new Date().toISOString(),
+  });
+  return next ? { project: next, taskIds: [...ids], statusId } : null;
+}
+
+function syncTaskStatusDom(projectId, taskIds, statusId) {
+  const meta = boardStatusMeta(statusId);
+  const idSet = new Set((taskIds || []).map(String));
+  content.querySelectorAll('[data-role="task-status"]').forEach((select) => {
+    const tid = String(select.dataset.taskId || "");
+    if (!idSet.has(tid)) return;
+    if (String(select.dataset.projectId || "") && String(select.dataset.projectId) !== String(projectId)) {
+      return;
+    }
+    select.value = statusId;
+    const row = select.closest("tr, .tasks-card-item, .task-subtree-item, .kanban-card");
+    if (row) {
+      if (row.dataset) {
+        row.dataset.filterStatusKey = statusId;
+        row.dataset.filterStatus = String(meta.label || "").toLowerCase();
+        row.dataset.status = statusId;
+        row.dataset.statusKey = statusId;
+      }
+    }
+    const subtreeItem = select.closest(".task-subtree-item");
+    const statusLabel = subtreeItem?.querySelector(".task-subtree-status");
+    if (statusLabel) statusLabel.textContent = meta.label || statusId;
+  });
+
+  content.querySelectorAll('[data-role="kanban-card"]').forEach((card) => {
+    const tid = String(card.dataset.taskId || "");
+    if (!idSet.has(tid)) return;
+    if (
+      card.dataset.projectId &&
+      String(card.dataset.projectId) !== String(projectId)
+    ) {
+      return;
+    }
+    card.dataset.status = statusId;
+    card.dataset.statusKey = statusId;
+    card.classList.remove("is-dragging");
+    const zone = content.querySelector(
+      `[data-role="kanban-drop"][data-status="${CSS.escape(statusId)}"]`
+    );
+    if (zone && card.parentElement !== zone) zone.appendChild(card);
   });
 }
 
@@ -340,7 +442,8 @@ function saveProjects(projects) {
 
 function persistProject(project) {
   const projects = loadProjects();
-  const index = projects.findIndex((item) => item.id === project.id);
+  const projectId = String(project?.id ?? "");
+  const index = projects.findIndex((item) => String(item.id) === projectId);
   if (index >= 0) {
     projects[index] = project;
   } else {
@@ -350,8 +453,33 @@ function persistProject(project) {
   return project;
 }
 
+function deleteProject(projectId) {
+  if (!projectId) return false;
+  const next = loadProjects().filter((item) => String(item.id) !== String(projectId));
+  saveProjects(next);
+  return true;
+}
+
+function confirmAndDeleteProject(projectId, { afterView = "building-projects" } = {}) {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  const ok = window.confirm(
+    `Usunąć projekt „${project.title}”? Tej operacji nie można cofnąć.`
+  );
+  if (!ok) return;
+  deleteProject(projectId);
+  showTypeToast("Usunięto projekt");
+  if (afterView === "building-projects") {
+    renderView("building-projects");
+  } else {
+    renderView(afterView);
+  }
+}
+
 function getProjectById(id) {
-  return loadProjects().find((project) => project.id === id) || null;
+  const projectId = String(id ?? "");
+  if (!projectId) return null;
+  return loadProjects().find((project) => String(project.id) === projectId) || null;
 }
 
 function formatDate(iso) {
@@ -688,7 +816,7 @@ function showTypeToast(label) {
         <path d="m5 12 5 5L20 7" />
       </svg>
     </span>
-    <span>Dodano typ: <strong>${escapeHtml(label)}</strong></span>
+    <span>${escapeHtml(label)}</span>
   `;
   toast.classList.add("is-visible");
 
@@ -707,21 +835,23 @@ function showFormSavedToast(message = "Zapisano zmiany") {
     document.body.appendChild(toast);
   }
 
+  toast.classList.remove("is-visible", "is-save-success", "is-check-anim");
+  // Force reflow so the check animation can replay
+  void toast.offsetWidth;
   toast.classList.add("is-save-success");
   toast.innerHTML = `
     <span class="type-toast-check" aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
-        <path d="m5 12 5 5L20 7" />
+        <path class="type-toast-check-path" d="m5 12 5 5L20 7" />
       </svg>
     </span>
     <span><strong>${escapeHtml(message)}</strong></span>
   `;
-  toast.classList.add("is-visible");
+  toast.classList.add("is-visible", "is-check-anim");
 
   window.clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => {
-    toast.classList.remove("is-visible");
-    toast.classList.remove("is-save-success");
+    toast.classList.remove("is-visible", "is-save-success", "is-check-anim");
   }, 2800);
 }
 
@@ -749,7 +879,7 @@ function formSaveSubmitButtonHtml() {
       type="submit"
       class="form-save-inline-btn"
       data-role="form-save-inline"
-      title="Zapisz formularz (F5)"
+      title="Zapisz formularz"
       aria-label="Zapisz formularz"
     >
       ${floppyDiskIconSvg()}
@@ -765,7 +895,7 @@ function ensureFormSaveFab() {
   fab.className = "form-save-fab";
   fab.hidden = true;
   fab.setAttribute("aria-label", "Zapisz formularz");
-  fab.title = "Zapisz formularz (F5)";
+  fab.title = "Zapisz formularz";
   fab.innerHTML = floppyDiskIconSvg();
   fab.addEventListener("click", (event) => {
     event.preventDefault();
@@ -777,17 +907,29 @@ function ensureFormSaveFab() {
 
 function getActiveFormRoot() {
   if (!formSaveContext) return null;
+  const v2Root = document.querySelector('[data-role="v2-root"]');
   if (formSaveContext.kind === "building") {
-    return document.getElementById("buildingProjectForm");
-  }
-  if (formSaveContext.docId) {
     return (
-      content.querySelector(
-        `[data-role="doc-form"][data-doc-id="${formSaveContext.docId}"]`
-      ) || content.querySelector('[data-role="doc-form"]')
+      document.getElementById("buildingProjectForm") ||
+      v2Root?.querySelector("#buildingProjectForm") ||
+      null
     );
   }
-  return content.querySelector('[data-role="doc-form"]');
+  if (formSaveContext.docId) {
+    const selector = `[data-role="doc-form"][data-doc-id="${formSaveContext.docId}"]`;
+    return (
+      v2Root?.querySelector(selector) ||
+      content.querySelector(selector) ||
+      v2Root?.querySelector('[data-role="doc-form"]') ||
+      content.querySelector('[data-role="doc-form"]') ||
+      null
+    );
+  }
+  return (
+    v2Root?.querySelector('[data-role="doc-form"]') ||
+    content.querySelector('[data-role="doc-form"]') ||
+    null
+  );
 }
 
 function countOpenFormSections(root) {
@@ -916,12 +1058,21 @@ function persistActiveTaskMetaFromDom() {
   if (!formSaveContext) return false;
   const project = getProjectById(formSaveContext.projectId);
   if (!project) return false;
-  const taskId =
-    formSaveContext.kind === "building"
-      ? "building-project"
-      : String(formSaveContext.docId || "");
-  if (!taskId) return false;
   const meta = content.querySelector('[data-role="doc-task-meta"]');
+  const taskId = String(
+    meta?.querySelector('[data-role="task-start"]')?.dataset.taskId ||
+      meta?.querySelector('[data-role="task-due"]')?.dataset.taskId ||
+      meta?.querySelector('[data-role="task-owner"]')?.dataset.taskId ||
+      meta?.querySelector('[data-role="task-status"]')?.dataset.taskId ||
+      content.querySelector('[data-role="task-description-input"]')?.dataset.taskId ||
+      (formSaveContext.kind === "building"
+        ? resolveDocumentTask(project, "building", "building-project").id
+        : formSaveContext.docId
+          ? resolveDocumentTask(project, "survey-doc", formSaveContext.docId).id
+          : "") ||
+      ""
+  );
+  if (!taskId) return false;
   const description = String(
     content.querySelector('[data-role="task-description-input"]')?.value || ""
   ).trim();
@@ -942,7 +1093,18 @@ function persistActiveTaskMetaFromDom() {
     updatedAt: new Date().toISOString(),
   };
   if (statusId) {
-    next.taskBoardStatus = { ...(project.taskBoardStatus || {}), [taskId]: statusId };
+    const flowTasks = project.flowInstance?.tasks || [];
+    const custom = project.customTasks || [];
+    const all = [...flowTasks, ...custom];
+    let ids = collectDescendantTaskIds(all, taskId);
+    if (!all.some((task) => String(task.id) === String(taskId))) {
+      ids = collectDescendantTaskIds(collectProjectTasks(project), taskId);
+    }
+    const board = { ...(project.taskBoardStatus || {}) };
+    ids.forEach((id) => {
+      board[id] = statusId;
+    });
+    next.taskBoardStatus = board;
   }
   persistProject(next);
   return true;
@@ -959,9 +1121,12 @@ function persistBuildingFormFromDom(projectId) {
 }
 
 function persistDocFormFromDom(projectId, docId) {
+  const v2Root = document.querySelector('[data-role="v2-root"]');
   const form =
     (docId &&
-      content.querySelector(`[data-role="doc-form"][data-doc-id="${docId}"]`)) ||
+      (v2Root?.querySelector(`[data-role="doc-form"][data-doc-id="${docId}"]`) ||
+        content.querySelector(`[data-role="doc-form"][data-doc-id="${docId}"]`))) ||
+    v2Root?.querySelector('[data-role="doc-form"]') ||
     content.querySelector('[data-role="doc-form"]');
   const current = getProjectById(projectId);
   const resolvedDocId = docId || form?.dataset.docId;
@@ -1086,14 +1251,8 @@ function bindFormSaveChrome(projectId, kind, docId = "") {
   updateFormSaveFabVisibility();
   markActiveFormClean();
 
-  formSaveKeyHandler = (event) => {
-    if (event.key !== "F5") return;
-    if (!formSaveContext) return;
-    event.preventDefault();
-    event.stopPropagation();
-    triggerActiveFormSave();
-  };
-  document.addEventListener("keydown", formSaveKeyHandler);
+  // F5 = odświeżenie przeglądarki — nie przejmujemy pod zapis formularza
+  formSaveKeyHandler = null;
 }
 
 function escapeHtml(value) {
@@ -1405,7 +1564,7 @@ function bindNewProjectForm() {
     if (!title) return;
 
     const existing = editingProjectId ? getProjectById(editingProjectId) : null;
-    const project = persistProject({
+    const base = {
       ...(existing || {}),
       id: existing?.id || `p${Date.now()}`,
       title,
@@ -1421,7 +1580,11 @@ function bindNewProjectForm() {
       }),
       createdAt: existing?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-    });
+    };
+    if (!existing) {
+      base.processTasks = Array.isArray(base.processTasks) ? base.processTasks : [];
+    }
+    const project = persistProject(base);
 
     editingProjectId = null;
     renderView("project-detail", { projectId: project.id, justSaved: true });
@@ -1853,6 +2016,15 @@ function buildingProjectsViewHtml() {
                     </button>
                     <button
                       type="button"
+                      class="ghost-btn table-action-btn is-danger"
+                      data-role="delete-project"
+                      data-project-id="${project.id}"
+                      title="Usuń projekt"
+                    >
+                      Usuń
+                    </button>
+                    <button
+                      type="button"
                       class="icon-action-btn"
                       data-role="generate-building-project"
                       data-project-id="${project.id}"
@@ -1878,17 +2050,23 @@ function buildingProjectsViewHtml() {
 
 function docsToSubmitViewHtml() {
   const groups = loadProjects()
-    .map((project) => ({
-      project,
-      documents: project.formalSurvey?.documents || [],
-    }))
+    .map((project) => {
+      const surveyDocs = project.formalSurvey?.documents || [];
+      const flowDocs = project.flowDocuments || [];
+      const seen = new Set(surveyDocs.map((doc) => doc.id));
+      const documents = [
+        ...surveyDocs,
+        ...flowDocs.filter((doc) => doc?.id && !seen.has(doc.id)),
+      ];
+      return { project, documents };
+    })
     .filter((group) => group.documents.length > 0);
 
   if (groups.length === 0) {
     return `
       <section class="projects-view">
         <div class="projects-empty panel">
-          <p>Brak dokumentów do złożenia. Wypełnij ankietę formalną w projekcie, aby wygenerować listę.</p>
+          <p>Brak dokumentów do złożenia. Wypełnij ankietę formalną lub wygeneruj Flow w projekcie.</p>
           <button class="primary-btn" type="button" data-view="building-projects">Projekty budowlane</button>
         </div>
       </section>`;
@@ -2229,7 +2407,7 @@ function formalSurveyFoldHtml(project) {
       <div class="project-fold-cta">
         <p>${
           count
-            ? "Możesz ponownie przejść ankietę i zaktualizować listę dokumentów do złożenia."
+            ? "Możesz ponownie przejść ankietę — istniejące dokumenty zostaną zachowane, nowe zostaną dodane."
             : "Odpowiedz na pytania, aby wygenerować listę wymaganych dokumentów urzędowych."
         }</p>
         <div class="project-fold-cta-actions">
@@ -2328,7 +2506,8 @@ function formalSurveyPanelHtml(project, answers, stepIndex) {
           <h2>Kreator dokumentów urzędowych</h2>
           <p class="survey-lead">
             Odpowiedzi zasilają listę dokumentów do złożenia dla tego projektu.
-            ${savedCount ? ` Ostatnio zapisano ${savedCount} pozycji.` : ""}
+            Ponowny zapis nie usuwa istniejących dokumentów — może tylko dodać nowe.
+            ${savedCount ? ` Obecnie na liście: ${savedCount}.` : ""}
           </p>
         </div>
         <button type="button" class="ghost-btn" data-role="close-formal-survey" data-project-id="${project.id}">
@@ -2478,16 +2657,60 @@ function taskStatusFromPercent(percent) {
 }
 
 const CONFIG_STORAGE_KEY = "snappoint.config";
+const WORKFLOW_STORAGE_KEY = "snappoint.workflow";
+
+/** @type {{ mode: "global" } | { mode: "project", projectId: string }} */
+let workflowRuntime = { mode: "global" };
+
+function setWorkflowRuntime(next) {
+  workflowRuntime = next && next.mode === "project" && next.projectId
+    ? { mode: "project", projectId: String(next.projectId) }
+    : { mode: "global" };
+}
+
+function isProjectWorkflowRuntime() {
+  return workflowRuntime.mode === "project";
+}
+
+function workflowTaskAllowsManualStart(task) {
+  if (!task || task.parentId) return false;
+  return !(task.blockedBy || []).length;
+}
+
+const STATUS_COLOR_PALETTE = [
+  { id: "gray", label: "Szary" },
+  { id: "slate", label: "Grafit" },
+  { id: "blue", label: "Niebieski" },
+  { id: "teal", label: "Teal" },
+  { id: "green", label: "Zielony" },
+  { id: "amber", label: "Bursztyn" },
+  { id: "orange", label: "Pomarańcz" },
+  { id: "rose", label: "Róż" },
+  { id: "red", label: "Czerwony" },
+  { id: "violet", label: "Fiolet" },
+];
+
+const STATUS_COLOR_IDS = new Set(STATUS_COLOR_PALETTE.map((item) => item.id));
+
+function normalizeStatusColor(value, fallback = "gray") {
+  const color = String(value || "").trim().toLowerCase();
+  return STATUS_COLOR_IDS.has(color) ? color : fallback;
+}
 
 const DEFAULT_KANBAN_STATUSES = [
-  { id: "todo", label: "Do zrobienia", autoCompleteAt100: false },
-  { id: "progress", label: "W toku", autoCompleteAt100: false },
-  { id: "done", label: "Gotowe", autoCompleteAt100: true },
+  { id: "todo", label: "Do zrobienia", color: "gray", autoCompleteAt100: false },
+  { id: "progress", label: "W toku", color: "blue", autoCompleteAt100: false },
+  { id: "done", label: "Gotowe", color: "green", autoCompleteAt100: true },
 ];
 
 const DEFAULT_TASK_TYPES = [
   { id: "document", label: "Dokument", autoFromDocs: true },
 ];
+
+function defaultStatusColorForIndex(index) {
+  const defaults = ["gray", "blue", "green", "amber", "violet", "teal", "orange", "rose", "slate", "red"];
+  return defaults[Math.max(0, index) % defaults.length];
+}
 
 function defaultAppConfig() {
   return {
@@ -2507,6 +2730,11 @@ function loadAppConfig() {
       .map((item, index) => ({
         id: String(item.id || `status-${index + 1}`),
         label: String(item.label || `Status ${index + 1}`).trim() || `Status ${index + 1}`,
+        color: normalizeStatusColor(
+          item.color,
+          DEFAULT_KANBAN_STATUSES.find((row) => row.id === item.id)?.color ||
+            defaultStatusColorForIndex(index)
+        ),
         order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
         autoCompleteAt100: Boolean(item.autoCompleteAt100),
       }))
@@ -2534,6 +2762,1928 @@ function saveAppConfig(config) {
   } catch {
     /* ignore */
   }
+}
+
+function defaultWorkflowState() {
+  return {
+    paths: [],
+    activePathId: null,
+  };
+}
+
+function normalizeWorkflowTask(item, index = 0) {
+  const durationRaw = Number(item?.durationDays);
+  const durationDays =
+    Number.isFinite(durationRaw) && durationRaw > 0 ? Math.min(999, Math.round(durationRaw)) : null;
+  const startDate =
+    typeof item?.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(item.startDate)
+      ? item.startDate
+      : null;
+  return {
+    id: String(item?.id || `wft-${index + 1}`),
+    name: String(item?.name || "").trim() || `Zadanie ${index + 1}`,
+    parentId: item?.parentId ? String(item.parentId) : null,
+    blocks: Array.isArray(item?.blocks) ? [...new Set(item.blocks.map(String))] : [],
+    blockedBy: Array.isArray(item?.blockedBy) ? [...new Set(item.blockedBy.map(String))] : [],
+    linkedDocId: item?.linkedDocId ? String(item.linkedDocId) : null,
+    sortOrder: Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index,
+    durationDays,
+    startDate,
+    parallel: Boolean(item?.parallel),
+  };
+}
+
+function normalizeWorkflowPath(item, index = 0) {
+  const tasks = Array.isArray(item?.tasks)
+    ? item.tasks.map((task, taskIndex) => normalizeWorkflowTask(task, taskIndex))
+    : [];
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const withParents = tasks.map((task) => ({
+    ...task,
+    parentId: task.parentId && taskIds.has(task.parentId) ? task.parentId : null,
+    blocks: task.blocks.filter((id) => taskIds.has(id) && id !== task.id),
+    blockedBy: task.blockedBy.filter((id) => taskIds.has(id) && id !== task.id),
+  }));
+  const sameLevel = sanitizeWorkflowSameLevelDependencies(withParents);
+  const childIds = getWorkflowChildIds(sameLevel);
+  const cleanedTasks = sameLevel.map((task) => {
+    const hasChildren = (childIds.get(task.id) || []).length > 0;
+    const isRoot = !task.parentId;
+    const hasBlockedBy = (task.blockedBy || []).length > 0;
+    return {
+      ...task,
+      durationDays: hasChildren ? null : task.durationDays,
+      startDate: isRoot && !hasBlockedBy ? task.startDate : null,
+    };
+  });
+  return {
+    id: String(item?.id || `wf-${index + 1}`),
+    name: String(item?.name || "").trim() || `Ścieżka ${index + 1}`,
+    createdAt: String(item?.createdAt || "") || new Date().toISOString(),
+    tasks: cleanedTasks,
+  };
+}
+
+function workflowTasksSameLevel(a, b) {
+  return (a?.parentId || null) === (b?.parentId || null);
+}
+
+/** Bez strzałek zależności zadanie jest równoległe względem rodzeństwa. */
+function workflowTaskIsParallel(task) {
+  return !(
+    (task?.blocks || []).length ||
+    (task?.blockedBy || []).length
+  );
+}
+
+/** Keep dependency edges only between siblings (same parent / root level). */
+function sanitizeWorkflowSameLevelDependencies(tasks) {
+  const taskMap = getWorkflowTaskMap(tasks);
+  const levelFiltered = tasks.map((task) => {
+    const blocks = (task.blocks || []).filter((id) => {
+      const other = taskMap.get(id);
+      return other && workflowTasksSameLevel(task, other);
+    });
+    const blockedBy = (task.blockedBy || []).filter((id) => {
+      const other = taskMap.get(id);
+      return other && workflowTasksSameLevel(task, other);
+    });
+    return { ...task, blocks, blockedBy };
+  });
+
+  // Flaga parallel wynika z braku strzałek — nie utrzymujemy osobnego stanu =
+  return levelFiltered.map((task) => ({
+    ...task,
+    parallel: workflowTaskIsParallel(task),
+  }));
+}
+
+function loadWorkflowState() {
+  if (workflowRuntime.mode === "project") {
+    const project = getProjectById(workflowRuntime.projectId);
+    const inst = project?.flowInstance;
+    const rawTasks = Array.isArray(inst?.tasks) ? inst.tasks : [];
+    return {
+      paths: [
+        {
+          id: "project-flow",
+          name: inst?.sourcePathName || "Flow projektu",
+          createdAt: inst?.generatedAt || new Date().toISOString(),
+          tasks: rawTasks.map((task, index) => normalizeWorkflowTask(task, index)),
+        },
+      ],
+      activePathId: "project-flow",
+    };
+  }
+  try {
+    const raw = localStorage.getItem(WORKFLOW_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || typeof parsed !== "object") return defaultWorkflowState();
+    const paths = Array.isArray(parsed.paths)
+      ? parsed.paths.map((item, index) => normalizeWorkflowPath(item, index)).filter((item) => item.id)
+      : [];
+    const activePathId = paths.some((item) => item.id === parsed.activePathId)
+      ? parsed.activePathId
+      : paths[0]?.id || null;
+    return { paths, activePathId };
+  } catch {
+    return defaultWorkflowState();
+  }
+}
+
+function saveWorkflowState(state) {
+  if (workflowRuntime.mode === "project") {
+    const project = getProjectById(workflowRuntime.projectId);
+    if (!project) return;
+    const path =
+      (state?.paths || []).find((item) => item.id === state.activePathId) ||
+      state?.paths?.[0];
+    const tasks = (path?.tasks || []).map((task, index) => normalizeWorkflowTask(task, index));
+    const flowDocuments =
+      typeof collectFlowExtraDocuments === "function"
+        ? collectFlowExtraDocuments(tasks, project)
+        : project.flowDocuments || [];
+    const prevHadStart = projectFlowHasRootStart(project.flowInstance?.tasks);
+    const nextHadStart = projectFlowHasRootStart(tasks);
+    let nextProject = {
+      ...project,
+      flowInstance: {
+        sourcePathId: project.flowInstance?.sourcePathId || null,
+        sourcePathName: path?.name || project.flowInstance?.sourcePathName || "Flow",
+        generatedAt: project.flowInstance?.generatedAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tasks,
+      },
+      flowDocuments,
+      processTasks: [],
+      updatedAt: new Date().toISOString(),
+    };
+    // Po wyznaczeniu (lub zmianie/wyczyszczeniu) daty startu — daty tabeli = harmonogram flow
+    if (nextHadStart || prevHadStart) {
+      nextProject = applyFlowScheduleDatesToProject(nextProject);
+    }
+    persistProject(nextProject);
+    return;
+  }
+  try {
+    localStorage.setItem(WORKFLOW_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    /* ignore */
+  }
+}
+
+function getWorkflowPaths() {
+  return loadWorkflowState().paths;
+}
+
+function getActiveWorkflowPath() {
+  const state = loadWorkflowState();
+  return state.paths.find((item) => item.id === state.activePathId) || null;
+}
+
+function setActiveWorkflowPathId(pathId) {
+  const state = loadWorkflowState();
+  if (!state.paths.some((item) => item.id === pathId)) return state;
+  const next = { ...state, activePathId: pathId };
+  saveWorkflowState(next);
+  return next;
+}
+
+function createWorkflowPath(name) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return null;
+  const state = loadWorkflowState();
+  const path = {
+    id: `wf-${Date.now()}`,
+    name: trimmed,
+    createdAt: new Date().toISOString(),
+    tasks: [],
+  };
+  const next = {
+    paths: [...state.paths, path],
+    activePathId: path.id,
+  };
+  saveWorkflowState(next);
+  return path;
+}
+
+function deleteWorkflowPath(pathId) {
+  const id = String(pathId || "");
+  if (!id) return false;
+  const state = loadWorkflowState();
+  const paths = (state.paths || []).filter((path) => String(path.id) !== id);
+  if (paths.length === (state.paths || []).length) return false;
+  const activePathId =
+    String(state.activePathId || "") === id
+      ? paths[0]?.id || null
+      : state.activePathId || null;
+  saveWorkflowState({ paths, activePathId });
+  return true;
+}
+
+function updateActiveWorkflowPath(mutator) {
+  const state = loadWorkflowState();
+  if (!state.activePathId) return null;
+  let updated = null;
+  const paths = state.paths.map((path) => {
+    if (path.id !== state.activePathId) return path;
+    updated = normalizeWorkflowPath(mutator({ ...path, tasks: [...(path.tasks || [])] }));
+    return updated;
+  });
+  if (!updated) return null;
+  saveWorkflowState({ ...state, paths });
+  return updated;
+}
+
+function getWorkflowTaskMap(tasks) {
+  return new Map((tasks || []).map((task) => [task.id, task]));
+}
+
+function sortWorkflowTasksTree(tasks) {
+  const list = [...(tasks || [])].sort((a, b) => {
+    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    return a.name.localeCompare(b.name, "pl");
+  });
+  const byParent = new Map();
+  list.forEach((task) => {
+    const key = task.parentId || "";
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(task);
+  });
+  const ordered = [];
+  const walk = (parentId, depth) => {
+    (byParent.get(parentId || "") || []).forEach((task) => {
+      ordered.push({ ...task, depth });
+      walk(task.id, depth + 1);
+    });
+  };
+  walk(null, 0);
+  return ordered;
+}
+
+const WORKFLOW_EXPAND_KEY = "snappoint.workflowExpand";
+/** @type {string | null} */
+let workflowHighlightTaskId = null;
+
+function loadWorkflowExpandState() {
+  try {
+    const raw = localStorage.getItem(WORKFLOW_EXPAND_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveWorkflowExpandState(state) {
+  try {
+    localStorage.setItem(WORKFLOW_EXPAND_KEY, JSON.stringify(state));
+  } catch {
+    /* ignore */
+  }
+}
+
+function isWorkflowTaskExpanded(pathId, taskId) {
+  const state = loadWorkflowExpandState();
+  const pathState = state[pathId];
+  // Domyślnie zwinięte — rozwijamy ręcznie
+  if (!pathState || typeof pathState !== "object") return false;
+  if (!Object.prototype.hasOwnProperty.call(pathState, taskId)) return false;
+  return Boolean(pathState[taskId]);
+}
+
+function setWorkflowTaskExpanded(pathId, taskId, expanded) {
+  const state = loadWorkflowExpandState();
+  const pathState = { ...(state[pathId] || {}), [taskId]: Boolean(expanded) };
+  saveWorkflowExpandState({ ...state, [pathId]: pathState });
+}
+
+function collapseAllWorkflowTasks(pathId, tasks) {
+  if (!pathId) return;
+  const pathState = {};
+  (tasks || []).forEach((task) => {
+    pathState[task.id] = false;
+  });
+  const state = loadWorkflowExpandState();
+  saveWorkflowExpandState({ ...state, [pathId]: pathState });
+}
+
+function expandWorkflowTaskAncestors(pathId, taskId, tasks) {
+  const taskMap = getWorkflowTaskMap(tasks);
+  let current = taskMap.get(taskId)?.parentId || null;
+  while (current) {
+    setWorkflowTaskExpanded(pathId, current, true);
+    current = taskMap.get(current)?.parentId || null;
+  }
+}
+
+function getWorkflowChildIds(tasks) {
+  const children = new Map();
+  const sorted = [...(tasks || [])].sort((a, b) => {
+    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    return a.name.localeCompare(b.name, "pl");
+  });
+  sorted.forEach((task) => {
+    const key = task.parentId || "";
+    if (!children.has(key)) children.set(key, []);
+    children.get(key).push(task.id);
+  });
+  return children;
+}
+
+function getWorkflowSiblingIds(tasks, parentId) {
+  return getWorkflowChildIds(tasks).get(parentId || "") || [];
+}
+
+function getVisibleWorkflowTasks(pathId, tasks) {
+  const ordered = sortWorkflowTasksTree(tasks);
+  const taskMap = getWorkflowTaskMap(tasks);
+  const childIds = getWorkflowChildIds(tasks);
+  return ordered
+    .filter((task) => {
+      let parentId = task.parentId;
+      while (parentId) {
+        if (!isWorkflowTaskExpanded(pathId, parentId)) return false;
+        parentId = taskMap.get(parentId)?.parentId || null;
+      }
+      return true;
+    })
+    .map((task) => ({
+      ...task,
+      hasChildren: (childIds.get(task.id) || []).length > 0,
+      expanded: isWorkflowTaskExpanded(pathId, task.id),
+    }));
+}
+
+function getWorkflowTasksForRender(pathId, tasks) {
+  const ordered = sortWorkflowTasksTree(tasks);
+  const taskMap = getWorkflowTaskMap(tasks);
+  const childIds = getWorkflowChildIds(tasks);
+  return ordered.map((task) => {
+    let collapsedAway = false;
+    let parentId = task.parentId;
+    while (parentId) {
+      if (!isWorkflowTaskExpanded(pathId, parentId)) {
+        collapsedAway = true;
+        break;
+      }
+      parentId = taskMap.get(parentId)?.parentId || null;
+    }
+    const hasChildren = (childIds.get(task.id) || []).length > 0;
+    return {
+      ...task,
+      hasChildren,
+      expanded: isWorkflowTaskExpanded(pathId, task.id),
+      collapsedAway,
+      isRoot: !task.parentId,
+      isLeaf: !hasChildren,
+    };
+  });
+}
+
+function findWorkflowTaskByDocId(path, docId) {
+  return (path?.tasks || []).find((task) => task.linkedDocId === docId) || null;
+}
+
+function renameWorkflowTask(taskId, name) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed || !taskId) return null;
+  return updateActiveWorkflowPath((path) => ({
+    ...path,
+    tasks: (path.tasks || []).map((task) =>
+      task.id === taskId ? { ...task, name: trimmed } : task
+    ),
+  }));
+}
+
+function deleteWorkflowTask(taskId) {
+  if (!taskId) return null;
+  if (workflowRuntime.mode === "project" && workflowRuntime.projectId) {
+    return deleteProjectTaskCascade(workflowRuntime.projectId, taskId);
+  }
+  return updateActiveWorkflowPath((path) => {
+    const tasks = path.tasks || [];
+    const removeIds = collectDescendantTaskIds(tasks, taskId);
+    const nextTasks = tasks
+      .filter((task) => !removeIds.has(String(task.id)))
+      .map((task) => ({
+        ...task,
+        blocks: (task.blocks || []).filter((id) => !removeIds.has(String(id))),
+        blockedBy: (task.blockedBy || []).filter((id) => !removeIds.has(String(id))),
+      }));
+    return { ...path, tasks: nextTasks };
+  });
+}
+
+function collectDescendantTaskIds(tasks, rootId) {
+  const removeIds = new Set([String(rootId)]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    (tasks || []).forEach((task) => {
+      const id = String(task.id);
+      const parent = task.parentId != null ? String(task.parentId) : "";
+      if (parent && removeIds.has(parent) && !removeIds.has(id)) {
+        removeIds.add(id);
+        changed = true;
+      }
+    });
+  }
+  return removeIds;
+}
+
+function deleteProjectTaskCascade(projectId, taskId) {
+  const project = getProjectById(projectId);
+  if (!project || !taskId) return null;
+  const flowTasks = project.flowInstance?.tasks || [];
+  const customTasks = project.customTasks || [];
+  const all = [...flowTasks, ...customTasks];
+  const removeIds = collectDescendantTaskIds(all, taskId);
+  if (!all.some((task) => String(task.id) === String(taskId))) return null;
+
+  const cleanTask = (task) => ({
+    ...task,
+    blocks: (task.blocks || []).filter((id) => !removeIds.has(String(id))),
+    blockedBy: (task.blockedBy || []).filter((id) => !removeIds.has(String(id))),
+    dependsOn: (task.dependsOn || []).filter((id) => !removeIds.has(String(id))),
+  });
+
+  const scrubMap = (map) => {
+    const next = { ...(map || {}) };
+    removeIds.forEach((id) => {
+      delete next[id];
+    });
+    return next;
+  };
+
+  return persistProject({
+    ...project,
+    flowInstance: project.flowInstance
+      ? {
+          ...project.flowInstance,
+          tasks: flowTasks
+            .filter((task) => !removeIds.has(String(task.id)))
+            .map(cleanTask),
+          updatedAt: new Date().toISOString(),
+        }
+      : project.flowInstance,
+    customTasks: customTasks
+      .filter((task) => !removeIds.has(String(task.id)))
+      .map(cleanTask),
+    taskDueDates: scrubMap(project.taskDueDates),
+    taskStartDates: scrubMap(project.taskStartDates),
+    taskOwners: scrubMap(project.taskOwners),
+    taskDescriptions: scrubMap(project.taskDescriptions),
+    taskNotes: scrubMap(project.taskNotes),
+    taskAttachments: scrubMap(project.taskAttachments),
+    taskChecklists: scrubMap(project.taskChecklists),
+    taskBoardStatuses: scrubMap(project.taskBoardStatuses),
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+function confirmAndDeleteProjectTask(projectId, taskId) {
+  const project = getProjectById(projectId);
+  if (!project || !taskId) return false;
+  const all = [
+    ...(project.flowInstance?.tasks || []),
+    ...(project.customTasks || []),
+  ];
+  const task = all.find((item) => String(item.id) === String(taskId));
+  if (!task) return false;
+  const removeIds = collectDescendantTaskIds(all, taskId);
+  const kids = removeIds.size - 1;
+  const ok = window.confirm(
+    kids > 0
+      ? `Usunąć zadanie „${task.name}” wraz z ${kids} podzadaniami?`
+      : `Usunąć zadanie „${task.name}”?`
+  );
+  if (!ok) return false;
+  if (!deleteProjectTaskCascade(projectId, taskId)) return false;
+  showTypeToast(kids > 0 ? `Usunięto zadanie i ${kids} podzadań` : "Usunięto zadanie");
+  return true;
+}
+
+function setWorkflowTaskDuration(taskId, days) {
+  const value = Number(days);
+  const durationDays =
+    Number.isFinite(value) && value > 0 ? Math.min(999, Math.round(value)) : null;
+  return updateActiveWorkflowPath((path) => {
+    const childIds = getWorkflowChildIds(path.tasks || []);
+    if ((childIds.get(taskId) || []).length > 0) return path;
+    return {
+      ...path,
+      tasks: (path.tasks || []).map((task) =>
+        task.id === taskId ? { ...task, durationDays } : task
+      ),
+    };
+  });
+}
+
+function setWorkflowTaskStartDate(taskId, dateValue) {
+  const startDate =
+    typeof dateValue === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateValue) ? dateValue : null;
+  return updateActiveWorkflowPath((path) => {
+    const task = (path.tasks || []).find((item) => item.id === taskId);
+    if (!task || !workflowTaskAllowsManualStart(task)) return path;
+    return {
+      ...path,
+      tasks: (path.tasks || []).map((item) =>
+        item.id === taskId ? { ...item, startDate } : item
+      ),
+    };
+  });
+}
+
+function setWorkflowTaskParallel(taskId, parallel) {
+  // Zachowane dla kompatybilności — równoległość wynika z braku strzałek
+  void taskId;
+  void parallel;
+  return getActiveWorkflowPath();
+}
+
+function createWorkflowTask(name, parentId = null) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return null;
+  let created = null;
+  updateActiveWorkflowPath((path) => {
+    const siblings = (path.tasks || []).filter(
+      (task) => (task.parentId || null) === (parentId || null)
+    );
+    created = normalizeWorkflowTask(
+      {
+        id: `wft-${Date.now()}`,
+        name: trimmed,
+        parentId: parentId || null,
+        blocks: [],
+        blockedBy: [],
+        linkedDocId: null,
+        sortOrder: siblings.length,
+        durationDays: null,
+        startDate: null,
+        parallel: false,
+      },
+      siblings.length
+    );
+    return { ...path, tasks: [...(path.tasks || []), created] };
+  });
+  return created;
+}
+
+function workflowProductionTaskName(docTitle) {
+  const title = String(docTitle || "").trim() || "dokument";
+  return `Produkcja: ${title}`;
+}
+
+/** Rootowe zadania „Produkcja: …” dla dokumentów bez powiązanego zadania. */
+function createWorkflowTasksForUnassignedDocuments() {
+  let createdCount = 0;
+  updateActiveWorkflowPath((path) => {
+    const linked = getLinkedDocIdsForPath(path);
+    const unassigned = workflowDocCatalog().filter((doc) => doc?.id && !linked.has(doc.id));
+    if (!unassigned.length) return path;
+    const rootCount = (path.tasks || []).filter((task) => !task.parentId).length;
+    const stamp = Date.now();
+    const added = unassigned.map((doc, index) =>
+      normalizeWorkflowTask(
+        {
+          id: `wft-${stamp}-${index}`,
+          name: workflowProductionTaskName(doc.title || doc.id),
+          parentId: null,
+          blocks: [],
+          blockedBy: [],
+          linkedDocId: doc.id,
+          sortOrder: rootCount + index,
+          durationDays: null,
+          startDate: null,
+          parallel: false,
+        },
+        rootCount + index
+      )
+    );
+    createdCount = added.length;
+    return { ...path, tasks: [...(path.tasks || []), ...added] };
+  });
+  return createdCount;
+}
+
+function renameWorkflowTaskFromLinkedDocument(taskId) {
+  if (!taskId) return null;
+  return updateActiveWorkflowPath((path) => {
+    const task = (path.tasks || []).find((item) => item.id === taskId);
+    if (!task?.linkedDocId) return path;
+    const title = workflowDocTitleById(task.linkedDocId);
+    const name = workflowProductionTaskName(title);
+    return {
+      ...path,
+      tasks: (path.tasks || []).map((item) =>
+        item.id === taskId ? { ...item, name } : item
+      ),
+    };
+  });
+}
+
+function workflowCreateUnassignedDocsButtonHtml(unassignedCount) {
+  const disabled = unassignedCount <= 0;
+  return `
+    <div class="workflow-docs-unassigned">
+      <button
+        type="button"
+        class="ghost-btn workflow-docs-unassigned-btn"
+        data-role="workflow-create-unassigned"
+        ${disabled ? "disabled" : ""}
+        title="${
+          disabled
+            ? "Wszystkie dokumenty mają już przypisane zadania"
+            : `Utwórz ${unassignedCount} zadań root dla nieprzypisanych dokumentów`
+        }"
+      >Utwórz zadania dla nieprzypisanych dokumentów${
+        disabled ? "" : ` (${unassignedCount})`
+      }</button>
+    </div>`;
+}
+
+function syncWorkflowDependencyEdges(tasks, taskId, relatedIds, mode) {
+  const taskMap = getWorkflowTaskMap(tasks);
+  const source = taskMap.get(taskId);
+  const related = new Set(
+    (relatedIds || []).filter((id) => {
+      if (!id || id === taskId) return false;
+      const other = taskMap.get(id);
+      return other && source && workflowTasksSameLevel(source, other);
+    })
+  );
+  const next = tasks.map((task) => {
+    if (task.id === taskId) {
+      if (mode === "blocks") {
+        return { ...task, blocks: [...related] };
+      }
+      return { ...task, blockedBy: [...related] };
+    }
+    if (mode === "blocks") {
+      const has = related.has(task.id);
+      const blockedBy = new Set(task.blockedBy || []);
+      if (has) blockedBy.add(taskId);
+      else blockedBy.delete(taskId);
+      return {
+        ...task,
+        blockedBy: [...blockedBy],
+      };
+    }
+    const has = related.has(task.id);
+    const blocks = new Set(task.blocks || []);
+    if (has) blocks.add(taskId);
+    else blocks.delete(taskId);
+    return {
+      ...task,
+      blocks: [...blocks],
+    };
+  });
+  return sanitizeWorkflowSameLevelDependencies(next);
+}
+
+function setWorkflowTaskDependencies(taskId, relatedIds, mode) {
+  return updateActiveWorkflowPath((path) => ({
+    ...path,
+    tasks: syncWorkflowDependencyEdges(path.tasks || [], taskId, relatedIds, mode),
+  }));
+}
+
+function linkWorkflowTaskDocument(taskId, docId) {
+  const tid = String(taskId || "");
+  const did = docId ? String(docId) : null;
+  return updateActiveWorkflowPath((path) => ({
+    ...path,
+    tasks: (path.tasks || []).map((task) => {
+      if (String(task.id) === tid) {
+        return { ...task, linkedDocId: did };
+      }
+      if (did && String(task.linkedDocId || "") === did) {
+        return { ...task, linkedDocId: null };
+      }
+      return task;
+    }),
+  }));
+}
+
+function canAssignWorkflowDocToTask(taskId, docId) {
+  const path = getActiveWorkflowPath();
+  const task = path?.tasks?.find((item) => item.id === taskId);
+  if (!task || !docId) return false;
+  if (task.linkedDocId && task.linkedDocId !== docId) return false;
+  return true;
+}
+
+function removeWorkflowDependency(fromId, toId) {
+  const path = getActiveWorkflowPath();
+  const task = path?.tasks?.find((item) => item.id === fromId);
+  if (!task) return null;
+  const nextBlocks = (task.blocks || []).filter((id) => id !== toId);
+  return setWorkflowTaskDependencies(fromId, nextBlocks, "blocks");
+}
+
+function getLinkedDocIdsForPath(path) {
+  return new Set(
+    (path?.tasks || []).map((task) => task.linkedDocId).filter(Boolean)
+  );
+}
+
+/** ——— Workflow working calendar (PL: no Sat/Sun/holidays) ——— */
+
+function workflowEasterSunday(year) {
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31);
+  const day = ((h + l - 7 * m + 114) % 31) + 1;
+  return new Date(year, month - 1, day);
+}
+
+function workflowPadDate(year, month, day) {
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function workflowAddCalendarDays(date, days) {
+  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+  return next;
+}
+
+function workflowPolishHolidaySet(year) {
+  const set = new Set([
+    workflowPadDate(year, 1, 1),
+    workflowPadDate(year, 1, 6),
+    workflowPadDate(year, 5, 1),
+    workflowPadDate(year, 5, 3),
+    workflowPadDate(year, 8, 15),
+    workflowPadDate(year, 11, 1),
+    workflowPadDate(year, 11, 11),
+    workflowPadDate(year, 12, 25),
+    workflowPadDate(year, 12, 26),
+  ]);
+  if (year >= 2025) set.add(workflowPadDate(year, 12, 24));
+  const easter = workflowEasterSunday(year);
+  const easterIso = workflowPadDate(
+    easter.getFullYear(),
+    easter.getMonth() + 1,
+    easter.getDate()
+  );
+  set.add(easterIso);
+  const easterMon = workflowAddCalendarDays(easter, 1);
+  set.add(
+    workflowPadDate(easterMon.getFullYear(), easterMon.getMonth() + 1, easterMon.getDate())
+  );
+  const pentecost = workflowAddCalendarDays(easter, 49);
+  set.add(
+    workflowPadDate(pentecost.getFullYear(), pentecost.getMonth() + 1, pentecost.getDate())
+  );
+  const corpus = workflowAddCalendarDays(easter, 60);
+  set.add(workflowPadDate(corpus.getFullYear(), corpus.getMonth() + 1, corpus.getDate()));
+  return set;
+}
+
+const workflowHolidayCache = new Map();
+
+function workflowHolidaysForYear(year) {
+  if (!workflowHolidayCache.has(year)) {
+    workflowHolidayCache.set(year, workflowPolishHolidaySet(year));
+  }
+  return workflowHolidayCache.get(year);
+}
+
+function workflowParseIsoDate(iso) {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return null;
+  const [y, m, d] = iso.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return null;
+  return date;
+}
+
+function workflowFormatIsoDate(date) {
+  return workflowPadDate(date.getFullYear(), date.getMonth() + 1, date.getDate());
+}
+
+function workflowIsWorkingDay(date) {
+  const day = date.getDay();
+  if (day === 0 || day === 6) return false;
+  const iso = workflowFormatIsoDate(date);
+  return !workflowHolidaysForYear(date.getFullYear()).has(iso);
+}
+
+function workflowNextWorkingDay(date) {
+  let cursor = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  while (!workflowIsWorkingDay(cursor)) {
+    cursor = workflowAddCalendarDays(cursor, 1);
+  }
+  return cursor;
+}
+
+function workflowAddWorkingDays(startDate, workingDays) {
+  if (!startDate || !(workingDays > 0)) return startDate ? new Date(startDate) : null;
+  let cursor = workflowNextWorkingDay(startDate);
+  let remaining = workingDays - 1;
+  while (remaining > 0) {
+    cursor = workflowAddCalendarDays(cursor, 1);
+    if (workflowIsWorkingDay(cursor)) remaining -= 1;
+  }
+  return cursor;
+}
+
+function workflowDayAfter(date) {
+  return workflowNextWorkingDay(workflowAddCalendarDays(date, 1));
+}
+
+function workflowMaxDate(dates) {
+  const valid = dates.filter(Boolean);
+  if (!valid.length) return null;
+  return valid.reduce((max, item) => (item > max ? item : max));
+}
+
+function workflowMinDate(dates) {
+  const valid = dates.filter(Boolean);
+  if (!valid.length) return null;
+  return valid.reduce((min, item) => (item < min ? item : min));
+}
+
+/**
+ * Roll up durations and compute start/end for all tasks.
+ * - Leaves: durationDays (user)
+ * - Parents: sum of sequential (linked) children + max(parallel children without arrows)
+ * - Start: only roots set manually; nested/remaining dates are derived
+ * - Parallel (default): siblings without dependency arrows share one time window
+ * - Sequential: siblings with arrows chain by deps / sortOrder
+ */
+function computeWorkflowSchedule(tasks) {
+  const list = Array.isArray(tasks) ? tasks : [];
+  const taskMap = getWorkflowTaskMap(list);
+  const childIds = getWorkflowChildIds(list);
+  const schedule = new Map();
+
+  const getDuration = (taskId) => schedule.get(taskId)?.duration || 0;
+
+  const effectiveDuration = (taskId, visiting = new Set()) => {
+    if (schedule.has(taskId) && schedule.get(taskId).duration != null) {
+      return schedule.get(taskId).duration;
+    }
+    if (visiting.has(taskId)) return 0;
+    visiting.add(taskId);
+    const kids = childIds.get(taskId) || [];
+    let duration = 0;
+    if (kids.length) {
+      const parallelDurs = [];
+      let sequentialSum = 0;
+      kids.forEach((id) => {
+        const childDur = effectiveDuration(id, visiting);
+        if (workflowTaskIsParallel(taskMap.get(id))) parallelDurs.push(childDur);
+        else sequentialSum += childDur;
+      });
+      duration = sequentialSum + (parallelDurs.length ? Math.max(...parallelDurs) : 0);
+    } else {
+      const leaf = taskMap.get(taskId);
+      duration = leaf?.durationDays > 0 ? leaf.durationDays : 0;
+    }
+    visiting.delete(taskId);
+    const prev = schedule.get(taskId) || {};
+    schedule.set(taskId, { ...prev, duration });
+    return duration;
+  };
+
+  list.forEach((task) => effectiveDuration(task.id));
+
+  const buildSiblingPhases = (siblingTaskIds) => {
+    const siblings = siblingTaskIds.map((id) => taskMap.get(id)).filter(Boolean);
+    const phases = [];
+    const parallelTasks = siblings.filter((task) => workflowTaskIsParallel(task));
+    if (parallelTasks.length) {
+      phases.push({
+        parallel: true,
+        tasks: parallelTasks,
+        order: Math.min(...parallelTasks.map((task) => task.sortOrder)),
+      });
+    }
+    siblings
+      .filter((task) => !workflowTaskIsParallel(task))
+      .forEach((task) => {
+        phases.push({ parallel: false, tasks: [task], order: task.sortOrder });
+      });
+    phases.sort((a, b) => a.order - b.order || a.tasks[0].name.localeCompare(b.tasks[0].name, "pl"));
+    return phases;
+  };
+
+  const blockerFloor = (task) => {
+    const dates = [];
+    (task.blockedBy || []).forEach((predId) => {
+      const predEnd = workflowParseIsoDate(schedule.get(predId)?.endDate);
+      if (predEnd) dates.push(workflowDayAfter(predEnd));
+    });
+    return workflowMaxDate(dates);
+  };
+
+  const applyTaskDates = (task, floorStart) => {
+    const duration = getDuration(task.id);
+    const candidates = [];
+    if (floorStart) candidates.push(floorStart);
+    const fromBlockers = blockerFloor(task);
+    if (fromBlockers) candidates.push(fromBlockers);
+
+    if (!task.parentId && task.startDate && !(task.blockedBy || []).length) {
+      const explicit = workflowParseIsoDate(task.startDate);
+      if (explicit) candidates.push(workflowNextWorkingDay(explicit));
+    }
+
+    let startDate = workflowMaxDate(candidates);
+    if (startDate) startDate = workflowNextWorkingDay(startDate);
+
+    let endDate = null;
+    if (startDate && duration > 0) {
+      endDate = workflowAddWorkingDays(startDate, duration);
+    } else if (startDate) {
+      endDate = startDate;
+    }
+
+    schedule.set(task.id, {
+      duration,
+      startDate: startDate ? workflowFormatIsoDate(startDate) : null,
+      endDate: endDate ? workflowFormatIsoDate(endDate) : null,
+      startIsManual: Boolean(!task.parentId && task.startDate),
+      parallel: workflowTaskIsParallel(task),
+    });
+    return endDate;
+  };
+
+  const scheduleGroup = (parentId, inheritedFloor) => {
+    const siblingIds = getWorkflowSiblingIds(list, parentId);
+    if (!siblingIds.length) return;
+
+    // Roots: each has own start date — no sibling chaining between roots
+    if (!parentId) {
+      siblingIds.forEach((id) => {
+        const task = taskMap.get(id);
+        if (!task) return;
+        applyTaskDates(task, null);
+        scheduleGroup(task.id, workflowParseIsoDate(schedule.get(task.id)?.startDate));
+      });
+      return;
+    }
+
+    const phases = buildSiblingPhases(siblingIds);
+    let cursor = inheritedFloor ? workflowNextWorkingDay(inheritedFloor) : null;
+
+    phases.forEach((phase) => {
+      const ends = [];
+      phase.tasks.forEach((task) => {
+        const end = applyTaskDates(task, cursor);
+        if (end) ends.push(end);
+        scheduleGroup(task.id, workflowParseIsoDate(schedule.get(task.id)?.startDate));
+      });
+      const phaseEnd = workflowMaxDate(ends);
+      if (phaseEnd) cursor = workflowDayAfter(phaseEnd);
+    });
+  };
+
+  scheduleGroup(null, null);
+
+  // Pull starts forward when "wymaga wykonania" resolves after first tree pass
+  for (let pass = 0; pass < list.length + 2; pass += 1) {
+    let changed = false;
+    list.forEach((task) => {
+      const prev = schedule.get(task.id);
+      if (!prev) return;
+      const candidates = [];
+      const currentStart = workflowParseIsoDate(prev.startDate);
+      if (currentStart) candidates.push(currentStart);
+      if (!task.parentId && task.startDate && !(task.blockedBy || []).length) {
+        const explicit = workflowParseIsoDate(task.startDate);
+        if (explicit) candidates.push(workflowNextWorkingDay(explicit));
+      }
+      const fromBlockers = blockerFloor(task);
+      if (fromBlockers) candidates.push(fromBlockers);
+      let startDate = workflowMaxDate(candidates);
+      if (!startDate) return;
+      startDate = workflowNextWorkingDay(startDate);
+      const startIso = workflowFormatIsoDate(startDate);
+      if (startIso === prev.startDate) return;
+      const duration = prev.duration || 0;
+      const endDate =
+        duration > 0 ? workflowAddWorkingDays(startDate, duration) : startDate;
+      schedule.set(task.id, {
+        ...prev,
+        startDate: startIso,
+        endDate: endDate ? workflowFormatIsoDate(endDate) : null,
+      });
+      changed = true;
+    });
+    if (!changed) break;
+  }
+
+  // Parents: span dates from children; keep rolled duration
+  const depthMap = new Map(sortWorkflowTasksTree(list).map((task) => [task.id, task.depth || 0]));
+  [...list]
+    .sort((a, b) => (depthMap.get(b.id) || 0) - (depthMap.get(a.id) || 0))
+    .forEach((task) => {
+      const kids = childIds.get(task.id) || [];
+      if (!kids.length) return;
+      const childStarts = kids.map((id) => workflowParseIsoDate(schedule.get(id)?.startDate));
+      const childEnds = kids.map((id) => workflowParseIsoDate(schedule.get(id)?.endDate));
+      const minStart = workflowMinDate(childStarts);
+      const maxEnd = workflowMaxDate(childEnds);
+      const prev = schedule.get(task.id) || { duration: 0 };
+      schedule.set(task.id, {
+        ...prev,
+        duration: prev.duration || 0,
+        startDate: minStart ? workflowFormatIsoDate(minStart) : prev.startDate || null,
+        endDate: maxEnd ? workflowFormatIsoDate(maxEnd) : prev.endDate || null,
+        startIsManual: Boolean(!task.parentId && task.startDate),
+        parallel: workflowTaskIsParallel(task),
+      });
+    });
+
+  return schedule;
+}
+
+/** Czy którykolwiek korzeń flow ma ręczną datę startu (kotwica harmonogramu). */
+function projectFlowHasRootStart(tasks) {
+  return (tasks || []).some(
+    (task) =>
+      !task.parentId &&
+      !(task.blockedBy || []).length &&
+      typeof task.startDate === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(task.startDate)
+  );
+}
+
+/** Liczba dni roboczych włącznie od–do (do eksportu durationDays). */
+function workflowCountWorkingDaysInclusive(startIso, endIso) {
+  let start = workflowParseIsoDate(startIso);
+  const end = workflowParseIsoDate(endIso);
+  if (!start || !end || end < start) return null;
+  start = workflowNextWorkingDay(start);
+  if (start > end) return null;
+  let count = 0;
+  let cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  while (cursor <= end) {
+    if (workflowIsWorkingDay(cursor)) count += 1;
+    cursor = workflowAddCalendarDays(cursor, 1);
+  }
+  return count > 0 ? count : null;
+}
+
+/**
+ * Przygotuj zadania flow projektu do szablonu Workflow:
+ * zachowaj durationDays (uzupełnij z dat projektu, jeśli brak), wyczyść kotwice startu.
+ */
+function buildWorkflowTemplateTasksFromProject(project) {
+  const tasks = Array.isArray(project?.flowInstance?.tasks)
+    ? project.flowInstance.tasks
+    : [];
+  const childIds = getWorkflowChildIds(tasks);
+  return tasks.map((task, index) => {
+    const id = String(task.id);
+    const hasChildren = (childIds.get(id) || []).length > 0;
+    let durationDays = task.durationDays;
+    if (!hasChildren && !(durationDays > 0)) {
+      const start =
+        typeof getTaskStartDate === "function"
+          ? getTaskStartDate(project, id)
+          : project?.taskStartDates?.[id] || task.startDate || "";
+      const due =
+        typeof getTaskDueDate === "function"
+          ? getTaskDueDate(project, id)
+          : project?.taskDueDates?.[id] || task.dueDate || "";
+      const fromDates = workflowCountWorkingDaysInclusive(start, due);
+      if (fromDates) durationDays = fromDates;
+      else if (start && due && typeof ganttDayDiff === "function") {
+        const a = parseTaskDateOnly?.(start) || workflowParseIsoDate(start);
+        const b = parseTaskDateOnly?.(due) || workflowParseIsoDate(due);
+        if (a && b && b >= a) durationDays = ganttDayDiff(a, b) + 1;
+      }
+    }
+    return normalizeWorkflowTask(
+      {
+        ...task,
+        durationDays: hasChildren ? null : durationDays,
+        startDate: null,
+      },
+      index
+    );
+  });
+}
+
+/** parentId zadania w flow lub customTasks. */
+function resolveProjectTaskParentId(project, taskId) {
+  const tid = String(taskId || "");
+  if (!tid || !project) return null;
+  const flow = (project.flowInstance?.tasks || []).find(
+    (task) => String(task.id) === tid
+  );
+  if (flow) return flow.parentId ? String(flow.parentId) : null;
+  const custom = (project.customTasks || []).find((task) => String(task.id) === tid);
+  return custom?.parentId ? String(custom.parentId) : null;
+}
+
+/** Zakres Od–Do zadania z map projektu (z fallbackiem pól zadania). */
+function getProjectTaskScheduleBounds(project, taskId) {
+  const tid = String(taskId || "");
+  if (!tid || !project) return { start: null, due: null };
+  let start = String(getTaskStartDate(project, tid) || "").slice(0, 10);
+  let due = String(getTaskDueDate(project, tid) || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(due)) {
+    const flow = (project.flowInstance?.tasks || []).find(
+      (task) => String(task.id) === tid
+    );
+    const custom = (project.customTasks || []).find((task) => String(task.id) === tid);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) {
+      start = String(flow?.startDate || custom?.startDate || "").slice(0, 10);
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(due)) {
+      due = String(flow?.dueDate || custom?.dueDate || "").slice(0, 10);
+    }
+  }
+  return {
+    start: /^\d{4}-\d{2}-\d{2}$/.test(start) ? start : null,
+    due: /^\d{4}-\d{2}-\d{2}$/.test(due) ? due : null,
+  };
+}
+
+/**
+ * Wepchnij zakres [start,end] w ramy [boundStart,boundEnd], zachowując długość gdy się da.
+ */
+function clampTaskRangeToBounds(startIso, endIso, boundStart, boundEnd) {
+  const rawStart = String(startIso || "").slice(0, 10);
+  const rawEnd = String(endIso || "").slice(0, 10);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(rawStart) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(rawEnd) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(String(boundStart || "")) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(String(boundEnd || ""))
+  ) {
+    return { start: rawStart, end: rawEnd, clamped: false };
+  }
+  const bS = parseTaskDateOnly(boundStart);
+  const bE = parseTaskDateOnly(boundEnd);
+  let s = parseTaskDateOnly(rawStart);
+  let e = parseTaskDateOnly(rawEnd);
+  if (!bS || !bE || !s || !e) {
+    return { start: rawStart, end: rawEnd, clamped: false };
+  }
+  if (bE < bS) {
+    return { start: rawStart, end: rawEnd, clamped: false };
+  }
+  if (e < s) {
+    const tmp = s;
+    s = e;
+    e = tmp;
+  }
+
+  const boundDays = ganttDayDiff(bS, bE);
+  let dur = ganttDayDiff(s, e);
+  let clamped = false;
+
+  if (dur > boundDays) {
+    return {
+      start: toIsoDateOnly(bS),
+      end: toIsoDateOnly(bE),
+      clamped: true,
+    };
+  }
+
+  if (s < bS) {
+    const shift = ganttDayDiff(s, bS);
+    s = addDaysIso(s, shift);
+    e = addDaysIso(e, shift);
+    clamped = true;
+  }
+  if (e > bE) {
+    const shift = ganttDayDiff(bE, e);
+    s = addDaysIso(s, -shift);
+    e = addDaysIso(e, -shift);
+    clamped = true;
+  }
+  if (s < bS) {
+    s = new Date(bS.getFullYear(), bS.getMonth(), bS.getDate());
+    e = addDaysIso(s, dur);
+    if (e > bE) e = new Date(bE.getFullYear(), bE.getMonth(), bE.getDate());
+    clamped = true;
+  }
+
+  return {
+    start: toIsoDateOnly(s),
+    end: toIsoDateOnly(e),
+    clamped,
+  };
+}
+
+/** Ogranicz daty zadania do ram bezpośredniego nadrzędnego. */
+function clampTaskRangeToParent(project, taskId, startIso, endIso) {
+  const parentId = resolveProjectTaskParentId(project, taskId);
+  if (!parentId) {
+    return {
+      start: String(startIso || "").slice(0, 10),
+      end: String(endIso || "").slice(0, 10),
+      clamped: false,
+      parentId: null,
+    };
+  }
+  const bounds = getProjectTaskScheduleBounds(project, parentId);
+  if (!bounds.start || !bounds.due) {
+    return {
+      start: String(startIso || "").slice(0, 10),
+      end: String(endIso || "").slice(0, 10),
+      clamped: false,
+      parentId,
+    };
+  }
+  const result = clampTaskRangeToBounds(
+    startIso,
+    endIso,
+    bounds.start,
+    bounds.due
+  );
+  return { ...result, parentId };
+}
+
+/**
+ * Wepchnij wszystkie potomne zadania w ramy nadrzędnego (po zmianie ram rodzica).
+ */
+function clampProjectSubtreeToParentBounds(project, parentId) {
+  if (!project || !parentId) return project;
+  const bounds = getProjectTaskScheduleBounds(project, parentId);
+  if (!bounds.start || !bounds.due) return project;
+
+  const childIds = [];
+  const walk = (pid) => {
+    (project.flowInstance?.tasks || []).forEach((task) => {
+      if (String(task.parentId || "") === String(pid)) {
+        childIds.push(String(task.id));
+        walk(task.id);
+      }
+    });
+    (project.customTasks || []).forEach((task) => {
+      if (String(task.parentId || "") === String(pid)) {
+        childIds.push(String(task.id));
+        walk(task.id);
+      }
+    });
+  };
+  walk(parentId);
+
+  if (!childIds.length) return project;
+
+  let nextStarts = { ...(project.taskStartDates || {}) };
+  let nextDues = { ...(project.taskDueDates || {}) };
+  let nextCustom = (project.customTasks || []).map((item) => ({ ...item }));
+  let changed = false;
+
+  childIds.forEach((id) => {
+    const curStart =
+      String(nextStarts[id] || getTaskStartDate(project, id) || "").slice(0, 10);
+    const curDue =
+      String(nextDues[id] || getTaskDueDate(project, id) || "").slice(0, 10);
+    if (
+      !/^\d{4}-\d{2}-\d{2}$/.test(curStart) ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(curDue)
+    ) {
+      return;
+    }
+    const clamped = clampTaskRangeToBounds(
+      curStart,
+      curDue,
+      bounds.start,
+      bounds.due
+    );
+    if (!clamped.clamped && clamped.start === curStart && clamped.end === curDue) {
+      return;
+    }
+    changed = true;
+    nextStarts[id] = clamped.start;
+    nextDues[id] = clamped.end;
+    nextCustom = nextCustom.map((item) =>
+      String(item.id) === id
+        ? { ...item, startDate: clamped.start, dueDate: clamped.end }
+        : item
+    );
+  });
+
+  if (!changed) return project;
+  return {
+    ...project,
+    taskStartDates: nextStarts,
+    taskDueDates: nextDues,
+    customTasks: nextCustom,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/** Przesuń ISO datę o N dni kalendarzowych. */
+function shiftIsoDateByDays(iso, dayDelta) {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(String(iso)) || !dayDelta) {
+    return iso || null;
+  }
+  const parsed =
+    typeof parseTaskDateOnly === "function"
+      ? parseTaskDateOnly(iso)
+      : workflowParseIsoDate(iso);
+  if (!parsed) return iso;
+  const next =
+    typeof addDaysIso === "function"
+      ? addDaysIso(parsed, dayDelta)
+      : workflowAddCalendarDays(parsed, dayDelta);
+  return typeof toIsoDateOnly === "function"
+    ? toIsoDateOnly(next)
+    : workflowFormatIsoDate(next);
+}
+
+/**
+ * Start projektu = zawsze data najwcześniejszego zadania (Od).
+ */
+function getProjectFlowScheduleAnchor(project) {
+  const starts = [];
+  const push = (value) => {
+    const iso = String(value || "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) starts.push(iso);
+  };
+  Object.values(project?.taskStartDates || {}).forEach(push);
+  (project?.customTasks || []).forEach((task) => push(task.startDate));
+  (project?.flowInstance?.tasks || []).forEach((task) => push(task.startDate));
+  if (!starts.length) return null;
+  starts.sort();
+  return starts[0];
+}
+
+function projectHasScheduledTaskDates(project) {
+  const maps = [project?.taskStartDates, project?.taskDueDates];
+  return maps.some(
+    (map) =>
+      map &&
+      Object.values(map).some((value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")))
+  );
+}
+
+/**
+ * Przesuń wszystkie daty projektu (mapy + custom + startDate korzeni flow) o N dni.
+ */
+function shiftProjectScheduleByDays(project, dayDelta, options = {}) {
+  if (!project || !dayDelta) return project;
+  const onlyIds = options.onlyIds ? new Set([...options.onlyIds].map(String)) : null;
+  const shiftValue = (iso) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(iso || ""))) return iso;
+    return shiftIsoDateByDays(iso, dayDelta);
+  };
+  const shiftMap = (map) => {
+    const next = { ...(map || {}) };
+    Object.keys(next).forEach((id) => {
+      if (onlyIds && !onlyIds.has(String(id))) return;
+      next[id] = shiftValue(next[id]);
+    });
+    return next;
+  };
+
+  const nextCustom = (project.customTasks || []).map((item) => {
+    if (onlyIds && !onlyIds.has(String(item.id))) return item;
+    return {
+      ...item,
+      startDate: shiftValue(item.startDate) || item.startDate,
+      dueDate: shiftValue(item.dueDate) || item.dueDate,
+    };
+  });
+
+  const nextFlowTasks = (project.flowInstance?.tasks || []).map((task) => {
+    if (onlyIds && !onlyIds.has(String(task.id))) return task;
+    if (!task.startDate) return task;
+    return { ...task, startDate: shiftValue(task.startDate) };
+  });
+
+  return {
+    ...project,
+    taskStartDates: shiftMap(project.taskStartDates),
+    taskDueDates: shiftMap(project.taskDueDates),
+    customTasks: nextCustom,
+    flowInstance: project.flowInstance
+      ? {
+          ...project.flowInstance,
+          tasks: nextFlowTasks,
+          updatedAt: new Date().toISOString(),
+        }
+      : project.flowInstance,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Ustaw start projektu (= data najwcześniejszego zadania).
+ * - Pierwszy raz (brak dat): wylicz harmonogram z durationDays od podanej daty.
+ * - Gdy daty już są: przesuń CAŁY harmonogram o deltę względem obecnego najwcześniejszego.
+ * @returns {object | null} zaktualizowany projekt
+ */
+function applyProjectFlowStartAnchor(project, startIso, options = {}) {
+  if (!project) return null;
+  const startDate =
+    typeof startIso === "string" && /^\d{4}-\d{2}-\d{2}$/.test(startIso)
+      ? startIso
+      : null;
+  if (!startDate) return project;
+
+  const forceRecompute = Boolean(options.forceRecompute);
+  const oldAnchor = getProjectFlowScheduleAnchor(project);
+  const canShift =
+    !forceRecompute &&
+    oldAnchor &&
+    /^\d{4}-\d{2}-\d{2}$/.test(oldAnchor) &&
+    projectHasScheduledTaskDates(project);
+
+  if (canShift) {
+    const oldDate =
+      typeof parseTaskDateOnly === "function"
+        ? parseTaskDateOnly(oldAnchor)
+        : workflowParseIsoDate(oldAnchor);
+    const newDate =
+      typeof parseTaskDateOnly === "function"
+        ? parseTaskDateOnly(startDate)
+        : workflowParseIsoDate(startDate);
+    if (!oldDate || !newDate) return project;
+    const dayDelta =
+      typeof ganttDayDiff === "function"
+        ? ganttDayDiff(oldDate, newDate)
+        : Math.round((newDate - oldDate) / 86400000);
+    if (!dayDelta) return project;
+
+    // Względem najwcześniejszego (np. cofniętego) zadania — całość jedzie razem
+    let next = shiftProjectScheduleByDays(project, dayDelta);
+    next = { ...next, autoScheduleDates: false };
+    return next;
+  }
+
+  // Pierwszy start / pusty harmonogram — wylicz z czasów trwania szablonu
+  const tasks = Array.isArray(project.flowInstance?.tasks)
+    ? project.flowInstance.tasks
+    : [];
+  if (!tasks.length) return project;
+
+  const nextTasks = tasks.map((task) => {
+    if (!workflowTaskAllowsManualStart(task)) return task;
+    return { ...task, startDate };
+  });
+
+  let next = {
+    ...project,
+    autoScheduleDates: true,
+    flowInstance: {
+      ...(project.flowInstance || {}),
+      tasks: nextTasks,
+      updatedAt: new Date().toISOString(),
+    },
+    updatedAt: new Date().toISOString(),
+  };
+  next = applyFlowScheduleDatesToProject(next);
+  return next;
+}
+
+/**
+ * Przenieś Od/Do z harmonogramu flow do dat tabeli projektu (taskStartDates / taskDueDates).
+ * Wywoływane gdy wyznaczona jest data startu korzenia (i przy kolejnych zapisach flow z kotwicą).
+ */
+function applyFlowScheduleDatesToProject(project) {
+  const tasks = project?.flowInstance?.tasks || [];
+  if (!project || !tasks.length) return project;
+  if (!isProjectAutoScheduleEnabled(project)) return project;
+
+  const schedule = computeWorkflowSchedule(tasks);
+  const nextStarts = { ...(project.taskStartDates || {}) };
+  const nextDues = { ...(project.taskDueDates || {}) };
+
+  tasks.forEach((task) => {
+    const sched = schedule.get(task.id) || {};
+    if (sched.startDate) nextStarts[task.id] = sched.startDate;
+    else delete nextStarts[task.id];
+    if (sched.endDate) nextDues[task.id] = sched.endDate;
+    else delete nextDues[task.id];
+  });
+
+  return {
+    ...project,
+    taskStartDates: nextStarts,
+    taskDueDates: nextDues,
+  };
+}
+
+const WORKFLOW_DOCS_COLLAPSED_KEY = "snappoint.workflowDocsCollapsed";
+
+function isWorkflowDocsCollapsed() {
+  try {
+    return localStorage.getItem(WORKFLOW_DOCS_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setWorkflowDocsCollapsed(collapsed) {
+  try {
+    localStorage.setItem(WORKFLOW_DOCS_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch {
+    /* ignore */
+  }
+}
+
+function isWorkflowDescendant(tasks, ancestorId, nodeId) {
+  const taskMap = getWorkflowTaskMap(tasks);
+  let current = taskMap.get(nodeId)?.parentId || null;
+  while (current) {
+    if (current === ancestorId) return true;
+    current = taskMap.get(current)?.parentId || null;
+  }
+  return false;
+}
+
+function renumberWorkflowSiblingOrders(tasks, parentId) {
+  const siblings = tasks
+    .filter((task) => (task.parentId || null) === (parentId || null))
+    .sort((a, b) => {
+      if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+      return a.name.localeCompare(b.name, "pl");
+    });
+  const orderMap = new Map(siblings.map((task, index) => [task.id, index]));
+  return tasks.map((task) =>
+    orderMap.has(task.id) ? { ...task, sortOrder: orderMap.get(task.id) } : task
+  );
+}
+
+function taskHasDependencyLinks(task) {
+  return Boolean(
+    (task?.blocks || []).length ||
+      (task?.blockedBy || []).length ||
+      (task?.dependsOn || []).length
+  );
+}
+
+function parentChangeDependencyBlockReason(moving, newParentId) {
+  if ((moving?.parentId || null) === (newParentId || null)) return null;
+  if (!taskHasDependencyLinks(moving)) return null;
+  return "Najpierw usuń powiązania — działają tylko na tym samym poziomie.";
+}
+
+/** Roll up Data Do for every parent from the latest child due (all levels). */
+function recomputeProjectParentDueDates(project) {
+  if (!project || !isProjectAutoScheduleEnabled(project)) return project;
+  const seen = new Set();
+  const nodes = [];
+  (project.flowInstance?.tasks || []).forEach((task) => {
+    if (!task?.id || seen.has(task.id)) return;
+    seen.add(task.id);
+    nodes.push({ id: task.id, parentId: task.parentId || null });
+  });
+  (project.customTasks || []).forEach((task) => {
+    if (!task?.id || seen.has(task.id)) return;
+    seen.add(task.id);
+    nodes.push({ id: task.id, parentId: task.parentId || null });
+  });
+
+  const childrenOf = new Map();
+  nodes.forEach((node) => {
+    if (!node.parentId) return;
+    if (!childrenOf.has(node.parentId)) childrenOf.set(node.parentId, []);
+    childrenOf.get(node.parentId).push(node.id);
+  });
+
+  const dues = { ...(project.taskDueDates || {}) };
+  const memo = new Map();
+  const resolveDue = (id) => {
+    if (memo.has(id)) return memo.get(id);
+    const kids = childrenOf.get(id) || [];
+    let due = "";
+    if (!kids.length) {
+      due = dues[id] || "";
+    } else {
+      const childDues = kids
+        .map((childId) => resolveDue(childId))
+        .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value));
+      due = childDues.length ? childDues.reduce((a, b) => (a > b ? a : b)) : "";
+      if (due) dues[id] = due;
+      else delete dues[id];
+    }
+    memo.set(id, due);
+    return due;
+  };
+  nodes.forEach((node) => resolveDue(node.id));
+  return { ...project, taskDueDates: dues };
+}
+
+/**
+ * Create or remove FS dependency: fromId blocks toId (same parent level only).
+ */
+function setProjectTaskDependency(projectId, fromId, toId, { remove = false } = {}) {
+  const project = getProjectById(projectId);
+  if (!project || !fromId || !toId || fromId === toId) return null;
+
+  const flowTasks = [...(project.flowInstance?.tasks || [])];
+  const customTasks = [...(project.customTasks || [])];
+  const fromFlow = flowTasks.find((task) => String(task.id) === String(fromId));
+  const toFlow = flowTasks.find((task) => String(task.id) === String(toId));
+  const fromCustom = customTasks.find((task) => String(task.id) === String(fromId));
+  const toCustom = customTasks.find((task) => String(task.id) === String(toId));
+
+  if (fromFlow && toFlow) {
+    if (!workflowTasksSameLevel(fromFlow, toFlow)) {
+      showTypeToast("Powiązania tylko na tym samym poziomie");
+      return null;
+    }
+    let related = [...(fromFlow.blocks || [])];
+    if (remove) related = related.filter((id) => id !== toId);
+    else if (!related.includes(toId)) related.push(toId);
+    const tasks = syncWorkflowDependencyEdges(flowTasks, fromId, related, "blocks");
+    let next = {
+      ...project,
+      flowInstance: {
+        ...project.flowInstance,
+        tasks,
+        updatedAt: new Date().toISOString(),
+      },
+      updatedAt: new Date().toISOString(),
+    };
+    next = applyFlowScheduleDatesToProject(next);
+    next = recomputeProjectParentDueDates(next);
+    return persistProject(next);
+  }
+
+  if (fromCustom && toCustom) {
+    if (!workflowTasksSameLevel(fromCustom, toCustom)) {
+      showTypeToast("Powiązania tylko na tym samym poziomie");
+      return null;
+    }
+    const nextCustom = customTasks.map((task) => {
+      if (String(task.id) !== String(toId)) return task;
+      const deps = new Set(task.dependsOn || []);
+      if (remove) deps.delete(fromId);
+      else deps.add(fromId);
+      return { ...task, dependsOn: [...deps], updatedAt: new Date().toISOString() };
+    });
+    let next = {
+      ...project,
+      customTasks: nextCustom,
+      updatedAt: new Date().toISOString(),
+    };
+    next = recomputeProjectParentDueDates(next);
+    return persistProject(next);
+  }
+
+  showTypeToast("Powiązania Gantta działają w obrębie tego samego typu zadań");
+  return null;
+}
+
+function collectProjectDependencyEdges(project) {
+  const edges = [];
+  const flowTasks = project?.flowInstance?.tasks || [];
+  const flowMap = getWorkflowTaskMap(flowTasks);
+  flowTasks.forEach((task) => {
+    (task.blocks || []).forEach((toId) => {
+      const target = flowMap.get(toId);
+      if (!target || !workflowTasksSameLevel(task, target)) return;
+      edges.push({ from: task.id, to: toId, projectId: project.id });
+    });
+  });
+  const customTasks = project?.customTasks || [];
+  const customMap = new Map(customTasks.map((task) => [task.id, task]));
+  customTasks.forEach((task) => {
+    (task.dependsOn || []).forEach((fromId) => {
+      const pred = customMap.get(fromId);
+      if (!pred || !workflowTasksSameLevel(pred, task)) return;
+      edges.push({ from: fromId, to: task.id, projectId: project.id });
+    });
+  });
+  return edges;
+}
+
+/**
+ * Move task within active path.
+ * @param {string} taskId
+ * @param {{ mode: "before"|"after"|"nest", targetId: string }} placement
+ */
+function applyMoveOnTaskList(tasks, taskId, placement) {
+  const { mode, targetId } = placement || {};
+  if (!taskId || !targetId || taskId === targetId) return null;
+  let list = [...(tasks || [])];
+  const moving = list.find((task) => task.id === taskId);
+  const target = list.find((task) => task.id === targetId);
+  if (!moving || !target) return null;
+  if (isWorkflowDescendant(list, taskId, targetId)) return null;
+
+  const nextParentId = mode === "nest" ? targetId : target.parentId || null;
+  const depBlock = parentChangeDependencyBlockReason(moving, nextParentId);
+  if (depBlock) {
+    applyMoveOnTaskList.lastError = depBlock;
+    return null;
+  }
+  applyMoveOnTaskList.lastError = "";
+
+  if (mode === "nest") {
+    const oldParent = moving.parentId || null;
+    const newParent = targetId;
+    list = list.map((task) =>
+      task.id === taskId ? { ...task, parentId: newParent } : task
+    );
+    const siblings = list
+      .filter((task) => (task.parentId || null) === newParent && task.id !== taskId)
+      .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+    const orderedIds = [...siblings.map((task) => task.id), taskId];
+    const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
+    list = list.map((task) =>
+      orderMap.has(task.id)
+        ? { ...task, parentId: newParent, sortOrder: orderMap.get(task.id) }
+        : task
+    );
+    if (typeof renumberWorkflowSiblingOrders === "function") {
+      list = renumberWorkflowSiblingOrders(list, oldParent);
+    }
+    return list;
+  }
+
+  const newParent = target.parentId || null;
+  const oldParent = moving.parentId || null;
+  list = list.map((task) =>
+    task.id === taskId ? { ...task, parentId: newParent } : task
+  );
+  const siblings = list
+    .filter((task) => (task.parentId || null) === newParent && task.id !== taskId)
+    .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  const targetIndex = siblings.findIndex((task) => task.id === targetId);
+  const insertAt = mode === "after" ? targetIndex + 1 : Math.max(0, targetIndex);
+  const orderedIds = siblings.map((task) => task.id);
+  orderedIds.splice(insertAt, 0, taskId);
+  const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
+  list = list.map((task) =>
+    orderMap.has(task.id)
+      ? { ...task, parentId: newParent, sortOrder: orderMap.get(task.id) }
+      : task
+  );
+  if (oldParent !== newParent && typeof renumberWorkflowSiblingOrders === "function") {
+    list = renumberWorkflowSiblingOrders(list, oldParent);
+  }
+  return list;
+}
+
+function moveProjectTask(projectId, taskId, placement) {
+  moveProjectTask.lastError = "";
+  const project = getProjectById(projectId);
+  if (!project || !taskId || !placement?.targetId) return null;
+  const flowTasks = project.flowInstance?.tasks || [];
+  const customTasks = project.customTasks || [];
+  const inFlow = flowTasks.some((task) => String(task.id) === String(taskId));
+  const targetInFlow = flowTasks.some(
+    (task) => String(task.id) === String(placement.targetId)
+  );
+  const inCustom = customTasks.some((task) => String(task.id) === String(taskId));
+  const targetInCustom = customTasks.some(
+    (task) => String(task.id) === String(placement.targetId)
+  );
+
+  const movingTask =
+    flowTasks.find((task) => String(task.id) === String(taskId)) ||
+    customTasks.find((task) => String(task.id) === String(taskId));
+  const targetTask =
+    flowTasks.find((task) => String(task.id) === String(placement.targetId)) ||
+    customTasks.find((task) => String(task.id) === String(placement.targetId));
+  if (movingTask && targetTask) {
+    const nextParentId =
+      placement.mode === "nest" ? targetTask.id : targetTask.parentId || null;
+    const depBlock = parentChangeDependencyBlockReason(movingTask, nextParentId);
+    if (depBlock) {
+      moveProjectTask.lastError = depBlock;
+      showTypeToast(depBlock);
+      return null;
+    }
+  }
+
+  let next = { ...project, updatedAt: new Date().toISOString() };
+
+  if (inFlow && targetInFlow) {
+    applyMoveOnTaskList.lastError = "";
+    const moved = applyMoveOnTaskList(flowTasks, taskId, placement);
+    if (!moved) {
+      if (applyMoveOnTaskList.lastError) {
+        moveProjectTask.lastError = applyMoveOnTaskList.lastError;
+        showTypeToast(applyMoveOnTaskList.lastError);
+      }
+      return null;
+    }
+    next = {
+      ...next,
+      flowInstance: {
+        ...project.flowInstance,
+        tasks: moved,
+        updatedAt: new Date().toISOString(),
+      },
+    };
+  } else if (inCustom) {
+    // Cel może być custom lub flow (parentId wskazuje na dowolne zadanie)
+    let working = [...customTasks];
+    if (targetInFlow && !targetInCustom) {
+      // tymczasowo dołącz cel flow, żeby nest/before działał względem parentId
+      const flowTarget = flowTasks.find(
+        (task) => String(task.id) === String(placement.targetId)
+      );
+      if (!flowTarget) return null;
+      if (placement.mode === "nest") {
+        working = working.map((task) =>
+          String(task.id) === String(taskId)
+            ? { ...task, parentId: flowTarget.id }
+            : task
+        );
+        const siblings = working
+          .filter(
+            (task) =>
+              String(task.parentId || "") === String(flowTarget.id) &&
+              String(task.id) !== String(taskId)
+          )
+          .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+        const orderedIds = [...siblings.map((t) => t.id), taskId];
+        const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
+        working = working.map((task) =>
+          orderMap.has(task.id)
+            ? { ...task, parentId: flowTarget.id, sortOrder: orderMap.get(task.id) }
+            : task
+        );
+      } else {
+        // before/after względem zadania flow → ten sam parent co cel flow
+        const newParent = flowTarget.parentId || null;
+        working = working.map((task) =>
+          String(task.id) === String(taskId) ? { ...task, parentId: newParent } : task
+        );
+        const siblings = working
+          .filter(
+            (task) =>
+              String(task.parentId || "") === String(newParent || "") &&
+              String(task.id) !== String(taskId)
+          )
+          .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+        const orderedIds = siblings.map((t) => t.id);
+        orderedIds.push(taskId);
+        const orderMap = new Map(orderedIds.map((id, index) => [id, index]));
+        working = working.map((task) =>
+          orderMap.has(task.id)
+            ? { ...task, parentId: newParent, sortOrder: orderMap.get(task.id) }
+            : task
+        );
+      }
+    } else if (targetInCustom) {
+      applyMoveOnTaskList.lastError = "";
+      const moved = applyMoveOnTaskList(working, taskId, placement);
+      if (!moved) {
+        if (applyMoveOnTaskList.lastError) {
+          moveProjectTask.lastError = applyMoveOnTaskList.lastError;
+          showTypeToast(applyMoveOnTaskList.lastError);
+        }
+        return null;
+      }
+      working = moved;
+    } else {
+      return null;
+    }
+    next = { ...next, customTasks: working };
+  } else {
+    return null;
+  }
+
+  if (placement.mode === "nest") {
+    const map = loadTaskExpandState(projectId);
+    map[placement.targetId] = true;
+    saveTaskExpandState(projectId, map);
+  }
+
+  next = recomputeProjectParentDueDates(next);
+  return persistProject(next);
+}
+
+function moveWorkflowTask(taskId, placement) {
+  const { mode, targetId } = placement || {};
+  if (!taskId || !targetId || taskId === targetId) return null;
+  moveWorkflowTask.lastError = "";
+
+  let blocked = false;
+  const result = updateActiveWorkflowPath((path) => {
+    applyMoveOnTaskList.lastError = "";
+    const moved = applyMoveOnTaskList(path.tasks || [], taskId, placement);
+    if (!moved) {
+      blocked = true;
+      if (applyMoveOnTaskList.lastError) {
+        moveWorkflowTask.lastError = applyMoveOnTaskList.lastError;
+        showTypeToast(applyMoveOnTaskList.lastError);
+      }
+      return path;
+    }
+    if (mode === "nest") {
+      setWorkflowTaskExpanded(path.id, targetId, true);
+    }
+    return { ...path, tasks: moved };
+  });
+  if (blocked) return null;
+  return result;
 }
 
 function getKanbanStatuses() {
@@ -2578,6 +4728,7 @@ const RESTORABLE_VIEWS = new Set([
   "users",
   "permissions",
   "configuration",
+  "workflow",
   "account",
   "project-detail",
 ]);
@@ -2663,7 +4814,6 @@ function captureNavScroll() {
   return {
     y: window.scrollY || document.documentElement.scrollTop || 0,
     ganttLeft: gantt ? gantt.scrollLeft : 0,
-    ganttTop: gantt ? gantt.scrollTop : 0,
   };
 }
 
@@ -2692,7 +4842,6 @@ function restoreNavScroll(view, options) {
     const gantt = document.querySelector('[data-role="gantt-pan"]');
     if (gantt) {
       gantt.scrollLeft = Number(saved.ganttLeft) || 0;
-      gantt.scrollTop = Number(saved.ganttTop) || 0;
     }
   } catch {
     /* ignore */
@@ -2782,7 +4931,15 @@ function setProjectListTab(tab) {
 function getTasksViewMode() {
   try {
     const mode = sessionStorage.getItem(TASKS_VIEW_KEY);
-    if (mode === "kanban" || mode === "gantt" || mode === "table") return mode;
+    if (
+      mode === "kanban" ||
+      mode === "gantt" ||
+      mode === "table" ||
+      mode === "cards" ||
+      mode === "flow"
+    ) {
+      return mode;
+    }
   } catch {
     /* ignore */
   }
@@ -2790,7 +4947,10 @@ function getTasksViewMode() {
 }
 
 function setTasksViewMode(mode) {
-  const next = mode === "kanban" || mode === "gantt" ? mode : "table";
+  const next =
+    mode === "kanban" || mode === "gantt" || mode === "flow" || mode === "cards"
+      ? mode
+      : "table";
   try {
     sessionStorage.setItem(TASKS_VIEW_KEY, next);
   } catch {
@@ -2928,14 +5088,16 @@ function resolveTaskBoardStatus(project, taskId, fillPercent) {
   const statuses = getKanbanStatuses();
   const statusIds = new Set(statuses.map((item) => item.id));
   const fillStatus = taskStatusFromPercent(fillPercent);
-  const saved = project?.taskBoardStatus?.[taskId];
+  const board = project?.taskBoardStatus || {};
+  const tid = String(taskId ?? "");
+  const saved = board[tid] ?? board[taskId];
 
   if (fillPercent >= 100) {
     const auto = statuses.find((item) => item.autoCompleteAt100);
     if (auto) return auto.id;
   }
 
-  if (saved && statusIds.has(saved)) return saved;
+  if (saved && statusIds.has(String(saved))) return String(saved);
 
   if (statusIds.has(fillStatus.key)) return fillStatus.key;
   return statuses[0]?.id || "todo";
@@ -2956,7 +5118,20 @@ function collectLinkedDocumentOptions(project) {
       name: "Projekt budowlany",
     },
   ];
+  const seen = new Set(["building-project"]);
   (project.formalSurvey?.documents || []).forEach((doc) => {
+    if (!doc?.id || seen.has(doc.id)) return;
+    seen.add(doc.id);
+    options.push({
+      value: `survey-doc:${doc.id}`,
+      kind: "survey-doc",
+      id: doc.id,
+      name: doc.title || "Dokument",
+    });
+  });
+  (project.flowDocuments || []).forEach((doc) => {
+    if (!doc?.id || seen.has(doc.id)) return;
+    seen.add(doc.id);
     options.push({
       value: `survey-doc:${doc.id}`,
       kind: "survey-doc",
@@ -2988,9 +5163,11 @@ function resolveLinkedDocLabel(project, linked) {
   if (!linked?.kind || !linked?.id) return "";
   if (linked.kind === "building") return "Projekt budowlany";
   if (linked.kind === "survey-doc") {
-    const doc = (project.formalSurvey?.documents || []).find(
-      (item) => String(item.id) === String(linked.id)
-    );
+    const doc =
+      (project.formalSurvey?.documents || []).find(
+        (item) => String(item.id) === String(linked.id)
+      ) ||
+      (project.flowDocuments || []).find((item) => String(item.id) === String(linked.id));
     return doc?.title || linked.name || "Dokument";
   }
   if (linked.kind === "attachment") {
@@ -3000,97 +5177,357 @@ function resolveLinkedDocLabel(project, linked) {
   return linked.name || "Dokument";
 }
 
-function collectProjectTasks(project) {
-  const tasks = [];
-  const docType = getDocumentTaskType();
-  const firstStatus = getKanbanStatuses()[0]?.id || "todo";
+const TASK_EXPAND_KEY = "snappoint.taskExpand";
 
-  if (docType) {
-    const buildingFill = getBuildingFormFillPercent(project);
-    const buildingStatusKey = resolveTaskBoardStatus(project, "building-project", buildingFill);
-    const buildingMeta = boardStatusMeta(buildingStatusKey);
-    tasks.push({
-      id: "building-project",
-      kind: "building",
-      source: "auto-doc",
-      typeId: docType.id,
-      typeLabel: docType.label,
-      name: "Projekt budowlany",
-      ownerId: getTaskOwnerId(project, "building-project"),
-      startDate: getTaskStartDate(project, "building-project"),
-      dueDate: getTaskDueDate(project, "building-project"),
-      description: getTaskDescription(project, "building-project"),
-      status: buildingMeta.label,
-      statusKey: buildingMeta.key,
-      progress: buildingFill,
-      linkedDoc: { kind: "building", id: "building-project", name: "Projekt budowlany" },
-      updatedAt: project.updatedAt || project.createdAt || "",
-    });
-
-    (project.formalSurvey?.documents || []).forEach((doc) => {
-      const fill = countDocFormFill(doc.id, project.docForms?.[doc.id] || {}).percent;
-      const statusKey = resolveTaskBoardStatus(project, doc.id, fill);
-      const meta = boardStatusMeta(statusKey);
-      tasks.push({
-        id: doc.id,
-        kind: "survey-doc",
-        source: "auto-doc",
-        typeId: docType.id,
-        typeLabel: docType.label,
-        name: doc.title || "Dokument",
-        ownerId: getTaskOwnerId(project, doc.id),
-        startDate: getTaskStartDate(project, doc.id),
-        dueDate: getTaskDueDate(project, doc.id),
-        description: getTaskDescription(project, doc.id),
-        status: meta.label,
-        statusKey: meta.key,
-        progress: fill,
-        linkedDoc: {
-          kind: "survey-doc",
-          id: doc.id,
-          name: doc.title || "Dokument",
-        },
-        updatedAt:
-          project.formalSurvey?.completedAt || project.updatedAt || project.createdAt || "",
-      });
-    });
+function loadTaskExpandState(projectId) {
+  try {
+    const raw = localStorage.getItem(TASK_EXPAND_KEY);
+    const all = raw ? JSON.parse(raw) : {};
+    const map = all?.[projectId];
+    return map && typeof map === "object" ? map : {};
+  } catch {
+    return {};
   }
-
-  (project.customTasks || []).forEach((task) => {
-    const type = getTaskTypes().find((item) => item.id === task.typeId);
-    const statusKey = resolveTaskBoardStatus(project, task.id, 0);
-    const meta = boardStatusMeta(statusKey || firstStatus);
-    const linked = task.linkedDoc
-      ? {
-          ...task.linkedDoc,
-          name: resolveLinkedDocLabel(project, task.linkedDoc),
-        }
-      : null;
-    tasks.push({
-      id: task.id,
-      kind: "custom",
-      source: "custom",
-      typeId: task.typeId || "",
-      typeLabel: type?.label || "Zadanie",
-      name: task.name || "Zadanie",
-      ownerId: getTaskOwnerId(project, task.id) || task.ownerId || NO_OWNER.id,
-      startDate: getTaskStartDate(project, task.id) || task.startDate || "",
-      dueDate: getTaskDueDate(project, task.id) || task.dueDate || "",
-      description: getTaskDescription(project, task.id) || task.description || "",
-      status: meta.label,
-      statusKey: meta.key,
-      progress: meta.key === getKanbanStatuses().find((s) => s.autoCompleteAt100)?.id ? 100 : 0,
-      linkedDoc: linked,
-      updatedAt: task.updatedAt || project.updatedAt || "",
-    });
-  });
-
-  return tasks;
 }
 
-/** Alias wsteczny */
+function saveTaskExpandState(projectId, map) {
+  try {
+    const raw = localStorage.getItem(TASK_EXPAND_KEY);
+    const all = raw ? JSON.parse(raw) : {};
+    all[projectId] = map;
+    localStorage.setItem(TASK_EXPAND_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore */
+  }
+}
+
+function isTaskNodeExpanded(projectId, task, expandMap) {
+  if (expandMap[task.id] !== undefined) return Boolean(expandMap[task.id]);
+  return (task.depth || 0) < 1;
+}
+
+function filterTasksByExpandState(projectId, tasks) {
+  const expandMap = loadTaskExpandState(projectId);
+  return tasks.filter((task) => {
+    if (!task.parentId) return true;
+    const byId = new Map(tasks.map((item) => [item.id, item]));
+    let parentId = task.parentId;
+    while (parentId) {
+      const parent = byId.get(parentId);
+      if (!parent) return true;
+      if (!isTaskNodeExpanded(projectId, parent, expandMap)) return false;
+      parentId = parent.parentId;
+    }
+    return true;
+  });
+}
+
+function setAllTaskExpandState(projectId, tasks, expanded) {
+  const map = loadTaskExpandState(projectId);
+  tasks.forEach((task) => {
+    if (task.hasChildren) map[task.id] = expanded;
+  });
+  saveTaskExpandState(projectId, map);
+}
+
+/** Zwiń drzewo do najwyższego poziomu (widać tylko zadania główne). */
+function collapseTasksToRootLevel(projectId, tasks) {
+  setAllTaskExpandState(projectId, tasks, false);
+}
+
+function toggleTaskExpandState(projectId, taskId) {
+  const map = loadTaskExpandState(projectId);
+  const tasks = collectProjectTasks(getProjectById(projectId) || {});
+  const task = tasks.find((item) => String(item.id) === String(taskId));
+  const current =
+    map[taskId] !== undefined ? Boolean(map[taskId]) : (task?.depth || 0) < 1;
+  map[taskId] = !current;
+  saveTaskExpandState(projectId, map);
+  return map[taskId];
+}
+
+function syncProjectProcessTasks(project, { persist = true } = {}) {
+  // Stary generator processTasks usunięty — źródłem jest project.flowInstance.
+  if (!project) return project;
+  if (!Array.isArray(project.processTasks)) {
+    const next = { ...project, processTasks: [] };
+    if (persist && project.id) {
+      return persistProject({
+        ...next,
+        updatedAt: project.updatedAt || new Date().toISOString(),
+      });
+    }
+    project.processTasks = [];
+    return next;
+  }
+  return project;
+}
+
+function flowInstanceTasksAsNodes(project) {
+  const tasks = project?.flowInstance?.tasks || [];
+  if (!tasks.length) return [];
+  const titleById = new Map();
+  if (typeof listAllPotentialWorkflowDocuments === "function") {
+    listAllPotentialWorkflowDocuments().forEach((doc) => titleById.set(doc.id, doc.title));
+  }
+  (project.formalSurvey?.documents || []).forEach((doc) => {
+    if (doc?.id) titleById.set(doc.id, doc.title || titleById.get(doc.id) || doc.id);
+  });
+  (project.flowDocuments || []).forEach((doc) => {
+    if (doc?.id) titleById.set(doc.id, doc.title || titleById.get(doc.id) || doc.id);
+  });
+
+  const schedule =
+    typeof computeWorkflowSchedule === "function"
+      ? computeWorkflowSchedule(tasks)
+      : new Map();
+  const ordered =
+    typeof sortWorkflowTasksTree === "function" ? sortWorkflowTasksTree(tasks) : tasks;
+
+  return ordered.map((task) => {
+    const sched = schedule.get(task.id) || {};
+    const linkedDoc = task.linkedDocId
+      ? {
+          kind: task.linkedDocId === "building-project" ? "building" : "survey-doc",
+          id: task.linkedDocId,
+          name: titleById.get(task.linkedDocId) || task.linkedDocId,
+        }
+      : null;
+    return {
+      id: task.id,
+      name: task.name || "Zadanie",
+      parentId: task.parentId || null,
+      kind: linkedDoc ? "doc-create" : "flow",
+      source: "flow",
+      linkedDoc,
+      dependsOn: Array.isArray(task.blockedBy) ? [...task.blockedBy] : [],
+      pathKey: null,
+      stepKey: null,
+      sortOrder: typeof task.sortOrder === "number" ? task.sortOrder : 0,
+      docId: task.linkedDocId || null,
+      depth: task.depth || 0,
+      durationDays: task.durationDays,
+      flowStartDate: sched.startDate || null,
+      flowEndDate: sched.endDate || null,
+      updatedAt: project.flowInstance?.updatedAt || project.updatedAt || "",
+      description: "",
+    };
+  });
+}
+
+function leafTaskFillPercent(project, task) {
+  if (task.kind !== "doc-create" || !task.linkedDoc) return 0;
+  if (task.linkedDoc.kind === "building") {
+    return getBuildingFormFillPercent(project);
+  }
+  if (task.linkedDoc.kind === "survey-doc") {
+    return countDocFormFill(task.linkedDoc.id, project.docForms?.[task.linkedDoc.id] || {})
+      .percent;
+  }
+  return 0;
+}
+
+function collectProjectTasks(project) {
+  const synced = syncProjectProcessTasks(project, { persist: true }) || project;
+  const firstStatus = getKanbanStatuses()[0]?.id || "todo";
+  const doneStatus =
+    getKanbanStatuses().find((item) => item.autoCompleteAt100)?.id || "done";
+  const docType = getDocumentTaskType();
+
+  const flowNodes = flowInstanceTasksAsNodes(synced);
+  const customRaw = synced.customTasks || [];
+  const customAsNodes = customRaw.map((task) => ({
+    id: task.id,
+    name: task.name || "Zadanie",
+    parentId: task.parentId || null,
+    kind: "custom",
+    source: "custom",
+    linkedDoc: task.linkedDoc || null,
+    dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn : [],
+    pathKey: null,
+    stepKey: null,
+    sortOrder: typeof task.sortOrder === "number" ? task.sortOrder : 1000,
+    docId: null,
+    typeId: task.typeId || "",
+    updatedAt: task.updatedAt || "",
+    description: task.description || "",
+    flowStartDate: null,
+    flowEndDate: null,
+  }));
+
+  const flowIds = new Set(flowNodes.map((t) => t.id));
+  const mergedNodes = [
+    ...flowNodes.map((t) => ({ ...t, typeId: docType?.id || "" })),
+    ...customAsNodes.filter((t) => !flowIds.has(t.id)),
+  ];
+
+  const ordered =
+    typeof sortProcessTasksTree === "function"
+      ? sortProcessTasksTree(mergedNodes)
+      : typeof sortWorkflowTasksTree === "function"
+        ? sortWorkflowTasksTree(mergedNodes)
+        : mergedNodes;
+
+  const childCount = new Map();
+  ordered.forEach((node) => {
+    if (!node.parentId) return;
+    childCount.set(node.parentId, (childCount.get(node.parentId) || 0) + 1);
+  });
+
+  const draft = ordered.map((node) => {
+    const fill = leafTaskFillPercent(synced, node);
+    const hasChildren = (childCount.get(node.id) || 0) > 0;
+    let statusKey;
+    if (hasChildren) {
+      statusKey = resolveTaskBoardStatus(synced, node.id, 0);
+    } else if (node.kind === "doc-create") {
+      statusKey = resolveTaskBoardStatus(synced, node.id, fill);
+    } else {
+      statusKey = resolveTaskBoardStatus(synced, node.id, 0);
+    }
+    const meta = boardStatusMeta(statusKey);
+    const type =
+      node.kind === "custom"
+        ? getTaskTypes().find((item) => item.id === node.typeId)
+        : null;
+    const linked = node.linkedDoc
+      ? {
+          ...node.linkedDoc,
+          name: resolveLinkedDocLabel(synced, node.linkedDoc),
+        }
+      : null;
+
+    return {
+      id: node.id,
+      kind: node.kind,
+      source: node.source || (node.kind === "custom" ? "custom" : "system"),
+      typeId: node.typeId || docType?.id || "",
+      typeLabel:
+        type?.label ||
+        (typeof typeLabelForProcessKind === "function"
+          ? typeLabelForProcessKind(node.kind)
+          : "Zadanie"),
+      name: node.name || "Zadanie",
+      parentId: node.parentId || null,
+      depth: node.depth || 0,
+      hasChildren,
+      dependsOn: Array.isArray(node.dependsOn) ? node.dependsOn : [],
+      pathKey: node.pathKey || null,
+      stepKey: node.stepKey || null,
+      docId: node.docId || null,
+      ownerId: getTaskOwnerId(synced, node.id),
+      startDate:
+        getTaskStartDate(synced, node.id) || node.flowStartDate || "",
+      dueDate: getTaskDueDate(synced, node.id) || node.flowEndDate || "",
+      startDateLocked:
+        isProjectAutoScheduleEnabled(synced) &&
+        Array.isArray(node.dependsOn) &&
+        node.dependsOn.length > 0,
+      description: getTaskDescription(synced, node.id) || node.description || "",
+      status: meta.label,
+      statusKey: meta.key,
+      progress:
+        node.kind === "doc-create"
+          ? fill
+          : meta.key === doneStatus
+            ? 100
+            : 0,
+      linkedDoc: linked,
+      updatedAt: node.updatedAt || synced.updatedAt || synced.createdAt || "",
+    };
+  });
+
+  const byId = new Map(draft.map((t) => [t.id, t]));
+  const childrenOf = new Map();
+  draft.forEach((t) => {
+    if (!t.parentId) return;
+    if (!childrenOf.has(t.parentId)) childrenOf.set(t.parentId, []);
+    childrenOf.get(t.parentId).push(t.id);
+  });
+
+  const rollupMemo = new Map();
+  const rollup = (taskId) => {
+    if (rollupMemo.has(taskId)) return rollupMemo.get(taskId);
+    const task = byId.get(taskId);
+    const kids = childrenOf.get(taskId) || [];
+    if (!task || !kids.length) {
+      const leaf = {
+        statusKey: task?.statusKey || firstStatus,
+        progress: task?.progress || 0,
+      };
+      rollupMemo.set(taskId, leaf);
+      return leaf;
+    }
+    const childStats = kids.map((id) => rollup(id));
+    const progress = Math.round(
+      childStats.reduce((sum, item) => sum + (item.progress || 0), 0) / childStats.length
+    );
+    const childKeys = childStats.map((item) => item.statusKey);
+    const unanimous =
+      childKeys.length > 0 && childKeys.every((key) => key === childKeys[0]);
+    const allDone = childStats.every((item) => item.statusKey === doneStatus);
+    const anyProgress = childStats.some(
+      (item) => item.statusKey !== firstStatus || (item.progress || 0) > 0
+    );
+    const mixedProgressId =
+      getKanbanStatuses().find((item) => item.id === "progress")?.id ||
+      childKeys.find((key) => key !== firstStatus && key !== doneStatus) ||
+      firstStatus;
+    const statusKey = unanimous
+      ? childKeys[0]
+      : allDone
+        ? doneStatus
+        : anyProgress
+          ? mixedProgressId
+          : firstStatus;
+    const result = { statusKey, progress: allDone ? 100 : progress };
+    rollupMemo.set(taskId, result);
+    return result;
+  };
+
+  draft.forEach((task) => {
+    if (!task.hasChildren) return;
+    const stats = rollup(task.id);
+    const meta = boardStatusMeta(stats.statusKey);
+    task.statusKey = meta.key;
+    task.status = meta.label;
+    task.progress = stats.progress;
+  });
+
+  // Data Do nadrzędnego = najpóźniejsza data Do wśród podrzędnych (tylko przy auto)
+  const autoSchedule = isProjectAutoScheduleEnabled(synced);
+  const dueMemo = new Map();
+  const resolveRolledDue = (taskId) => {
+    if (dueMemo.has(taskId)) return dueMemo.get(taskId);
+    const kids = childrenOf.get(taskId) || [];
+    let due = "";
+    if (!kids.length) {
+      due = byId.get(taskId)?.dueDate || "";
+    } else {
+      const childDues = kids
+        .map((id) => resolveRolledDue(id))
+        .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value));
+      due = childDues.length ? childDues.reduce((a, b) => (a > b ? a : b)) : "";
+    }
+    dueMemo.set(taskId, due);
+    return due;
+  };
+  draft.forEach((task) => {
+    if (autoSchedule && task.hasChildren) {
+      const rolled = resolveRolledDue(task.id);
+      if (rolled) task.dueDate = rolled;
+      task.dueDateLocked = true;
+    } else {
+      task.dueDateLocked = false;
+    }
+  });
+
+  return draft;
+}
+
+/** Alias wsteczny — dokumenty = liście z formularzem */
 function collectProjectDocuments(project) {
-  return collectProjectTasks(project).filter((task) => task.source === "auto-doc");
+  return collectProjectTasks(project).filter((task) => task.kind === "doc-create");
 }
 
 function taskDateControlHtml(project, task, { value, inputRole, openRole, label }) {
@@ -3132,6 +5569,11 @@ function taskDateFieldHtml(project, task, { colId, value, inputRole, openRole, l
 }
 
 function dueDateFieldHtml(project, task) {
+  if (task.dueDateLocked) {
+    return `<td data-col="due"><span class="task-date-readonly" title="Data zakończenia wynika z ostatniego podzadania">${
+      task.dueDate ? escapeHtml(formatDateOnly(task.dueDate)) : "—"
+    }</span></td>`;
+  }
   return taskDateFieldHtml(project, task, {
     colId: "due",
     value: task.dueDate,
@@ -3142,6 +5584,11 @@ function dueDateFieldHtml(project, task) {
 }
 
 function startDateFieldHtml(project, task) {
+  if (task.startDateLocked) {
+    return `<span class="task-date-readonly" title="Start wyliczany po zakończeniu wymaganych zadań">${
+      task.startDate ? escapeHtml(formatDateOnly(task.startDate)) : "—"
+    }</span>`;
+  }
   return taskDateFieldHtml(project, task, {
     colId: "start",
     value: task.startDate,
@@ -3168,26 +5615,108 @@ function ownerLabel(project, ownerId) {
 }
 
 function documentPrimaryTaskId(kind, linkId) {
+  if (typeof documentCreateTaskId === "function") {
+    return documentCreateTaskId(kind, linkId);
+  }
+  return kind === "building" ? "building-project" : String(linkId);
+}
+
+/** Zadanie powiązane z dokumentem (flow/custom) albo legacy id dokumentu. */
+function resolveDocumentTask(project, kind, linkId) {
+  const legacyId = documentPrimaryTaskId(kind, linkId);
+  const tasks = collectProjectTasks(project);
+  let task = null;
+
+  if (kind === "building") {
+    task = tasks.find((item) => item.linkedDoc?.kind === "building") || null;
+  } else if (kind === "survey-doc") {
+    task =
+      tasks.find(
+        (item) =>
+          item.linkedDoc?.kind === "survey-doc" &&
+          String(item.linkedDoc.id) === String(linkId)
+      ) || null;
+  } else if (
+    kind === "task" ||
+    kind === "process" ||
+    kind === "step" ||
+    kind === "milestone" ||
+    kind === "flow" ||
+    kind === "custom"
+  ) {
+    task = tasks.find((item) => String(item.id) === String(linkId)) || null;
+  }
+
+  if (!task) {
+    task = tasks.find((item) => String(item.id) === String(legacyId)) || null;
+  }
+
+  if (task) {
+    const startDate =
+      task.startDate || getTaskStartDate(project, legacyId) || getTaskStartDate(project, task.id) || "";
+    const dueDate =
+      task.dueDate || getTaskDueDate(project, legacyId) || getTaskDueDate(project, task.id) || "";
+    return { ...task, startDate, dueDate };
+  }
+
+  return {
+    id: legacyId,
+    dueDate: getTaskDueDate(project, legacyId),
+    startDate: getTaskStartDate(project, legacyId),
+    statusKey: resolveTaskBoardStatus(project, legacyId, 0),
+    dueDateLocked: false,
+  };
+}
+
+/** Klucz Discord / dyskusji — stabilny per dokument, nie per liść procesu */
+function discussionThreadKey(kind, linkId) {
   return kind === "building" ? "building-project" : String(linkId);
 }
 
 function collectDocumentRelatedTasks(project, kind, linkId) {
   const link = String(linkId);
-  const primaryId = documentPrimaryTaskId(kind, linkId);
-  return collectProjectTasks(project).filter((task) => {
-    if (String(task.id) === String(primaryId)) return false;
+  const primary = resolveDocumentTask(project, kind, linkId);
+  const primaryId = String(primary.id);
+  const tasks = collectProjectTasks(project);
+  return tasks.filter((task) => {
+    if (String(task.id) === primaryId) return false;
+    if (kind === "task" || kind === "process" || kind === "step" || kind === "milestone") {
+      if (primary?.parentId && String(task.parentId || "") === String(primary.parentId)) {
+        return true;
+      }
+      if (primary && String(task.parentId) === String(primary.id)) return true;
+      return false;
+    }
+    if (primary?.parentId && String(task.parentId || "") === String(primary.parentId)) {
+      return true;
+    }
     if (kind === "building") {
-      if (task.kind === "building" || task.id === "building-project") return true;
       return task.linkedDoc?.kind === "building";
     }
     if (kind === "survey-doc") {
-      if (task.kind === "survey-doc" && String(task.id) === link) return true;
       return (
         task.linkedDoc?.kind === "survey-doc" && String(task.linkedDoc.id) === link
       );
     }
     return false;
   });
+}
+
+function taskStateIconsHtml(project, task) {
+  const deps = Array.isArray(task.dependsOn) ? task.dependsOn : [];
+  if (!deps.length) return "";
+  const names = deps
+    .map((id) => {
+      const found =
+        (typeof findAnyStoredTask === "function" && findAnyStoredTask(project, id)) ||
+        (project?.customTasks || []).find((item) => String(item.id) === String(id));
+      return found?.name || id;
+    })
+    .filter(Boolean);
+  const title = names.length ? `Wymaga wcześniej: ${names.join(", ")}` : "Ma zależności";
+  return `<span class="task-dep-badge" title="${escapeHtml(title)}" aria-label="${escapeHtml(
+    title
+  )}">⛓ ${deps.length}</span>`;
 }
 
 function taskOwnerSelectHtml(project, taskId, { className = "owner-select" } = {}) {
@@ -3210,10 +5739,6 @@ function taskOwnerSelectHtml(project, taskId, { className = "owner-select" } = {
         )
         .join("")}
     </select>`;
-}
-
-function discussionThreadKey(kind, linkId) {
-  return documentPrimaryTaskId(kind, linkId);
 }
 
 function getTaskDiscussionNotes(project, kind, linkId) {
@@ -3646,34 +6171,202 @@ function closeRelatedTasksModal() {
   document.body.classList.remove("modal-open");
 }
 
-function openRelatedTaskFromMeta(projectId, taskKind, taskId) {
-  const id = projectId;
-  if (taskKind === "building") {
-    closeRelatedTasksModal();
-    renderView("project-detail", { projectId: id, panel: "building-form" });
+function projectDetailPageTitle(project, panel, options = {}) {
+  if (panel === "building-form") return `${project.title} · Projekt budowlany`;
+  if (panel === "formal-survey") return `${project.title} · Ankieta formalna`;
+  if (panel === "kpa") return `${project.title} · KPA`;
+  if (panel === "doc-form") {
+    const entity = resolveProjectDetailEntityTitle(project, panel, options);
+    return entity ? `${entity} · ${project.title}` : `${project.title} · Dokument`;
+  }
+  if (panel === "task-detail") {
+    const entity = resolveProjectDetailEntityTitle(project, panel, options);
+    return entity ? `${entity} · ${project.title}` : `${project.title} · Zadanie`;
+  }
+  return project.title;
+}
+
+function resolveProjectDetailEntityTitle(project, panel, options = {}) {
+  if (panel === "task-detail" && options.focusTaskId) {
+    const task = collectProjectTasks(project).find(
+      (item) => String(item.id) === String(options.focusTaskId)
+    );
+    return task?.name || "";
+  }
+  if (panel === "doc-form" && options.focusDocId) {
+    const linked = resolveDocumentTask(project, "survey-doc", options.focusDocId);
+    if (linked?.name) return linked.name;
+    const doc =
+      (project.formalSurvey?.documents || []).find(
+        (item) => String(item.id) === String(options.focusDocId)
+      ) ||
+      (project.flowDocuments || []).find(
+        (item) => String(item.id) === String(options.focusDocId)
+      );
+    return doc?.title || "";
+  }
+  if (panel === "building-form") {
+    const linked = resolveDocumentTask(project, "building", "building-project");
+    return linked?.name || "Projekt budowlany";
+  }
+  return "";
+}
+
+function bindProjectDetailPanel(projectId, panel) {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  content.querySelectorAll("[data-view]").forEach((el) => {
+    el.addEventListener("click", (event) => {
+      event.preventDefault();
+      renderView(el.dataset.view);
+    });
+  });
+  content.querySelectorAll('[data-role="edit-project"]').forEach((btn) => {
+    btn.addEventListener("click", () => openProjectForEdit(btn.dataset.projectId));
+  });
+  bindProjectDetailActions(projectId);
+  if (panel === "building-form") bindBuildingForm(projectId);
+  if (panel === "formal-survey") bindFormalSurvey(projectId);
+  if (panel === "kpa") bindKpaPanel(projectId);
+  if (panel === "doc-form") {
+    bindProjectDocForms(projectId);
+    bindDocumentPdfDownloads();
+  }
+  if (panel === "task-detail") {
+    bindTaskDescriptionEditors(projectId);
+    bindContextFlowWidget();
+  }
+  if (panel !== "formal-survey" && panel !== "doc-form" && panel !== "kpa" && panel !== "task-detail" && panel !== "building-form") {
+    bindAiChat();
+  }
+}
+
+function navigateProjectPanel(projectId, options = {}) {
+  const project = getProjectById(projectId);
+  if (!project) return;
+
+  const nextOptions = {
+    projectId,
+    panel: options.panel || "overview",
+    focusDocId: options.focusDocId || null,
+    focusTaskId: options.focusTaskId || null,
+    listTab: options.listTab || getProjectListTab(),
+  };
+
+  if (
+    !bypassFormDirtyGuard &&
+    isActiveFormDirty() &&
+    isLeavingFormContext("project-detail", nextOptions)
+  ) {
+    openUnsavedChangesModal({
+      onSaveExit: () => {
+        bypassFormDirtyGuard = true;
+        navigateProjectPanel(projectId, options);
+        bypassFormDirtyGuard = false;
+      },
+      onDiscard: () => {
+        bypassFormDirtyGuard = true;
+        navigateProjectPanel(projectId, options);
+        bypassFormDirtyGuard = false;
+      },
+      onCancel: () => {},
+    });
     return;
   }
-  if (taskKind === "survey-doc") {
-    closeRelatedTasksModal();
-    renderView("project-detail", {
-      projectId: id,
+
+  const shell = content.querySelector("section.project-detail");
+  const sameProject = shell && String(shell.dataset.projectId || "") === String(projectId);
+
+  if (!sameProject) {
+    renderView("project-detail", nextOptions);
+    return;
+  }
+
+  closeCategoryModal();
+  closeUnsavedChangesModal();
+  unbindFormSaveChrome();
+
+  const panel = nextOptions.panel;
+  if (panel === "formal-survey") initSurveyDraft(project);
+
+  const temp = document.createElement("div");
+  temp.innerHTML = projectDetailHtml(project, panel, {
+    focusDocId: nextOptions.focusDocId,
+    focusTaskId: nextOptions.focusTaskId,
+    listTab: nextOptions.listTab,
+  });
+  const nextSection = temp.querySelector("section.project-detail");
+  if (!nextSection) {
+    renderView("project-detail", nextOptions);
+    return;
+  }
+
+  pageTitle.textContent = projectDetailPageTitle(project, panel, {
+    focusDocId: nextOptions.focusDocId,
+    focusTaskId: nextOptions.focusTaskId,
+  });
+  setActiveNav("project-detail");
+
+  const navToken = (navigateProjectPanel._token = (navigateProjectPanel._token || 0) + 1);
+
+  const finish = () => {
+    if (navToken !== navigateProjectPanel._token) return;
+    shell.replaceWith(nextSection);
+    nextSection.classList.add("is-panel-enter");
+    bindProjectDetailPanel(projectId, panel);
+    persistNavigation(
+      "project-detail",
+      cleanNavOptions({
+        projectId,
+        panel,
+        focusDocId: nextOptions.focusDocId,
+        focusTaskId: nextOptions.focusTaskId,
+        listTab: nextOptions.listTab,
+      })
+    );
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => nextSection.classList.remove("is-panel-enter"));
+    });
+  };
+
+  shell.classList.add("is-panel-leave");
+  window.setTimeout(finish, 170);
+}
+
+function openProjectTaskById(projectId, taskId, taskKindHint = "") {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  const task =
+    collectProjectTasks(project).find((item) => String(item.id) === String(taskId)) || null;
+
+  if (task?.kind === "doc-create" && task.linkedDoc) {
+    openLinkedDocument(projectId, task.linkedDoc.kind, task.linkedDoc.id);
+    return;
+  }
+  if (taskKindHint === "building" || task?.kind === "building" || taskId === "building-project") {
+    navigateProjectPanel(projectId, { panel: "building-form" });
+    return;
+  }
+  if (taskKindHint === "survey-doc" || task?.kind === "survey-doc") {
+    navigateProjectPanel(projectId, {
       panel: "doc-form",
       focusDocId: taskId,
     });
     return;
   }
-  if (taskKind === "custom") {
-    const project = getProjectById(id);
-    const task = (project?.customTasks || []).find(
-      (item) => String(item.id) === String(taskId)
-    );
-    closeRelatedTasksModal();
-    if (task?.linkedDoc) {
-      openLinkedDocument(id, task.linkedDoc.kind, task.linkedDoc.id);
-      return;
-    }
-    showTypeToast("To zadanie nie ma powiązanego dokumentu");
+  if (task?.kind === "custom" && task.linkedDoc?.kind && task.linkedDoc.kind !== "attachment") {
+    openLinkedDocument(projectId, task.linkedDoc.kind, task.linkedDoc.id);
+    return;
   }
+  navigateProjectPanel(projectId, {
+    panel: "task-detail",
+    focusTaskId: taskId,
+  });
+}
+
+function openRelatedTaskFromMeta(projectId, taskKind, taskId) {
+  closeRelatedTasksModal();
+  openProjectTaskById(projectId, taskId, taskKind);
 }
 
 function openRelatedTasksModal(projectId, kind, linkId) {
@@ -3740,18 +6433,12 @@ function documentTaskSplitHtml(
   linkId,
   { title = "", eyebrow = "Dokument / zadanie", showTitle = true } = {}
 ) {
-  const primaryTaskId = documentPrimaryTaskId(kind, linkId);
+  const primaryTask = resolveDocumentTask(project, kind, linkId);
+  const primaryTaskId = primaryTask.id;
   const related = collectDocumentRelatedTasks(project, kind, linkId);
   const description = getTaskDescription(project, primaryTaskId);
   const displayTitle =
     title || (kind === "building" ? "Projekt budowlany" : "Zadanie");
-  const primaryTask =
-    collectProjectTasks(project).find((task) => String(task.id) === String(primaryTaskId)) || {
-      id: primaryTaskId,
-      dueDate: getTaskDueDate(project, primaryTaskId),
-      startDate: getTaskStartDate(project, primaryTaskId),
-      statusKey: resolveTaskBoardStatus(project, primaryTaskId, 0),
-    };
 
   return `
     <div class="doc-task-split" data-role="doc-task-meta">
@@ -3796,12 +6483,20 @@ function documentTaskSplitHtml(
           </div>
           <div class="doc-task-schedule-field">
             <span class="doc-task-meta-label">Data zakończenia</span>
-            ${taskDateControlHtml(project, primaryTask, {
-              value: primaryTask.dueDate,
-              inputRole: "task-due",
-              openRole: "open-task-due",
-              label: "Data zakończenia prac",
-            })}
+            ${
+              primaryTask.dueDateLocked
+                ? `<span class="task-date-readonly" title="Data zakończenia wynika z ostatniego podzadania">${
+                    primaryTask.dueDate
+                      ? escapeHtml(formatDateOnly(primaryTask.dueDate))
+                      : "—"
+                  }</span>`
+                : taskDateControlHtml(project, primaryTask, {
+                    value: primaryTask.dueDate,
+                    inputRole: "task-due",
+                    openRole: "open-task-due",
+                    label: "Data zakończenia prac",
+                  })
+            }
           </div>
           <div class="doc-task-schedule-field doc-task-status-field">
             <span class="doc-task-meta-label">Status</span>
@@ -3828,7 +6523,8 @@ function documentTaskMetaHtml(project, kind, linkId) {
 }
 
 function kanbanLinkedDocIconHtml(project, task) {
-  if (!task.linkedDoc) return "";
+  if (!task?.linkedDoc) return "";
+  if (task.kind !== "doc-create") return "";
   const label = resolveLinkedDocLabel(project, task.linkedDoc);
   return `
     <button
@@ -3871,8 +6567,65 @@ function taskDescriptionIconHtml(task) {
 function taskNameIconsHtml(project, task) {
   const docIcon = kanbanLinkedDocIconHtml(project, task);
   const descIcon = taskDescriptionIconHtml(task);
-  if (!docIcon && !descIcon) return "";
-  return `<span class="task-name-icons">${docIcon}${descIcon}</span>`;
+  const depIcon = taskStateIconsHtml(project, task);
+  if (!docIcon && !descIcon && !depIcon) return "";
+  return `<span class="task-name-icons">${docIcon}${descIcon}${depIcon}</span>`;
+}
+
+function getTaskTreeHiddenIdSet(projectId, tasks) {
+  const expandMap = loadTaskExpandState(projectId);
+  const byId = new Map(tasks.map((item) => [String(item.id), item]));
+  const hidden = new Set();
+  tasks.forEach((task) => {
+    let parentId = task.parentId;
+    while (parentId) {
+      const parent = byId.get(String(parentId));
+      if (!parent) break;
+      if (!isTaskNodeExpanded(projectId, parent, expandMap)) {
+        hidden.add(String(task.id));
+        break;
+      }
+      parentId = parent.parentId;
+    }
+  });
+  return hidden;
+}
+
+function syncTaskTreeDom(panel) {
+  if (!panel) return;
+  const projectId = panel.dataset.projectId;
+  const project = getProjectById(projectId);
+  if (!project) return;
+  const tasks = collectProjectTasks(project);
+  const treeHidden = getTaskTreeHiddenIdSet(projectId, tasks);
+  const expandMap = loadTaskExpandState(projectId);
+
+  panel.querySelectorAll('tr[data-role="open-task"]').forEach((row) => {
+    const id = String(row.dataset.taskId || "");
+    row.classList.toggle("is-tree-hidden", treeHidden.has(id));
+  });
+
+  panel.querySelectorAll('.tasks-card-item[data-role="open-task"]').forEach((item) => {
+    const id = String(item.dataset.taskId || "");
+    item.classList.toggle("is-collapsed-hidden", treeHidden.has(id));
+  });
+
+  panel.querySelectorAll('[data-role="toggle-task-expand"]').forEach((btn) => {
+    const task = tasks.find((item) => String(item.id) === String(btn.dataset.taskId));
+    if (!task) return;
+    const expanded = isTaskNodeExpanded(projectId, task, expandMap);
+    btn.classList.toggle("is-expanded", expanded);
+    btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    if (!btn.querySelector("svg")) {
+      btn.textContent = expanded ? "▼" : "▶";
+    }
+    btn.title = expanded ? "Zwiń" : "Rozwiń";
+    btn.setAttribute("aria-label", expanded ? "Zwiń podzadania" : "Rozwiń podzadania");
+  });
+
+  if (typeof panel._applyTaskFilters === "function") {
+    panel._applyTaskFilters();
+  }
 }
 
 function kanbanCardHtml(project, task, { hidden = false } = {}) {
@@ -3953,6 +6706,8 @@ function projectTasksKanbanHtml(project, options = {}) {
   const flat = [];
   projects.forEach((p) => {
     collectProjectTasks(p).forEach((task) => {
+      // Kanban: liście + kamienie milowe bez dzieci
+      if (task.hasChildren) return;
       flat.push({ task, project: p });
     });
   });
@@ -4023,6 +6778,8 @@ function projectTasksKanbanHtml(project, options = {}) {
 }
 
 function projectTasksTableBodyHtml(project, tasks, tableId) {
+  const expandMap = loadTaskExpandState(project.id);
+  const treeHidden = getTaskTreeHiddenIdSet(project.id, tasks);
   const filterPlaceholders = {
     name: "Nazwa / typ…",
     progress: "np. >=50",
@@ -4101,6 +6858,9 @@ function projectTasksTableBodyHtml(project, tasks, tableId) {
     .join("");
 
   return `
+    <div class="tasks-table-view" data-role="tasks-table-view" data-project-id="${escapeHtml(
+      project.id
+    )}">
       <div class="tasks-table-toolbar table-toolbar">
         <label class="tasks-search search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
@@ -4116,10 +6876,27 @@ function projectTasksTableBodyHtml(project, tasks, tableId) {
           />
         </label>
         <p class="table-filter-meta" data-role="task-filter-count">${tasks.length} zadań</p>
+        <button
+          type="button"
+          class="ghost-btn table-action-btn"
+          data-role="tasks-table-add-root"
+          data-project-id="${escapeHtml(project.id)}"
+          title="Dodaj zadanie główne do Flow projektu"
+        >+ Zadanie główne</button>
+        <button type="button" class="ghost-btn table-action-btn" data-role="tasks-expand-all" data-project-id="${project.id}">
+          Rozwiń wszystko
+        </button>
+        <button type="button" class="ghost-btn table-action-btn" data-role="tasks-collapse-roots" data-project-id="${project.id}">
+          Zwiń wszystko
+        </button>
         <button type="button" class="ghost-btn table-action-btn" data-role="clear-task-filters">
           Wyczyść filtry
         </button>
       </div>
+      <div class="workflow-layout tasks-table-layout${
+        isWorkflowDocsCollapsed() ? " is-docs-collapsed" : ""
+      }" data-role="workflow-layout">
+        <div class="tasks-table-main" data-role="tasks-table-main">
       <div class="data-table-wrap data-table-lined-wrap">
         <table class="data-table data-table-lined is-col-customizable" data-table="${tableId}" data-role="tasks-table">
           <colgroup>
@@ -4217,14 +6994,60 @@ function projectTasksTableBodyHtml(project, tasks, tableId) {
                 ]
                   .join(" ")
                   .toLowerCase();
+                const depth = task.depth || 0;
+                const expanded = isTaskNodeExpanded(project.id, task, expandMap);
+                const expandBtn = task.hasChildren
+                  ? `<button type="button" class="task-tree-toggle ${
+                      expanded ? "is-expanded" : ""
+                    }" data-role="toggle-task-expand" data-project-id="${
+                      project.id
+                    }" data-task-id="${escapeHtml(task.id)}" aria-expanded="${
+                      expanded ? "true" : "false"
+                    }" title="${expanded ? "Zwiń" : "Rozwiń"}" aria-label="${
+                      expanded ? "Zwiń podzadania" : "Rozwiń podzadania"
+                    }">${expanded ? "▼" : "▶"}</button>`
+                  : `<span class="task-tree-toggle-spacer" aria-hidden="true"></span>`;
                 const cells = {
                   name: `<td data-col="name">
-                    <div class="task-name-cell">
+                    <div class="task-name-cell" style="--task-depth:${depth}">
                       <div class="task-name-row">
-                        <strong>${escapeHtml(task.name)}</strong>
+                        ${expandBtn}
+                        <button
+                          type="button"
+                          class="task-title-btn"
+                          data-role="open-task-title"
+                          data-project-id="${project.id}"
+                          data-task-id="${escapeHtml(task.id)}"
+                          data-task-kind="${escapeHtml(task.kind)}"
+                        >${escapeHtml(task.name)}</button>
                         ${taskNameIconsHtml(project, task)}
                       </div>
                       <span class="task-type-pill">${escapeHtml(task.typeLabel || "Zadanie")}</span>
+                      <div class="task-row-actions">
+                        <button
+                          type="button"
+                          class="ghost-btn tasks-card-mini-btn"
+                          data-role="${
+                            (project.flowInstance?.tasks || []).some(
+                              (item) => String(item.id) === String(task.id)
+                            )
+                              ? "workflow-add-child"
+                              : "open-add-task"
+                          }"
+                          data-task-id="${escapeHtml(task.id)}"
+                          data-project-id="${escapeHtml(project.id)}"
+                          data-parent-task-id="${escapeHtml(task.id)}"
+                          title="Dodaj zadanie podrzędne"
+                        >+ Podrzędne</button>
+                        <button
+                          type="button"
+                          class="ghost-btn tasks-card-mini-btn is-danger"
+                          data-role="delete-project-task"
+                          data-task-id="${escapeHtml(task.id)}"
+                          data-project-id="${escapeHtml(project.id)}"
+                          title="Usuń zadanie"
+                        >Usuń</button>
+                      </div>
                     </div>
                   </td>`,
                   owner: `<td data-col="owner">
@@ -4263,11 +7086,15 @@ function projectTasksTableBodyHtml(project, tasks, tableId) {
                 };
                 return `
               <tr
-                class="is-row-clickable"
+                class="is-row-clickable task-tree-row${task.hasChildren ? " has-children" : ""}${
+                  treeHidden.has(String(task.id)) ? " is-tree-hidden" : ""
+                }"
                 data-role="open-task"
                 data-task-kind="${escapeHtml(task.kind)}"
                 data-task-id="${escapeHtml(task.id)}"
                 data-project-id="${project.id}"
+                data-parent-id="${escapeHtml(task.parentId || "")}"
+                data-task-depth="${depth}"
                 data-filter-name="${escapeHtml(
                   `${task.name} ${task.typeLabel || ""} ${linkedLabel} ${task.description || ""}`.toLowerCase()
                 )}"
@@ -4302,7 +7129,11 @@ function projectTasksTableBodyHtml(project, tasks, tableId) {
       </div>
       <p class="files-empty-inline attachment-filter-empty" data-role="task-filter-empty" hidden>
         Brak zadań pasujących do filtrów.
-      </p>`;
+      </p>
+        </div>
+        ${projectInstanceDocsPanelHtml(project)}
+      </div>
+    </div>`;
 }
 
 function parseTaskDateOnly(value) {
@@ -4379,20 +7210,28 @@ function addDaysIso(date, days) {
 function persistTaskSchedule(projectId, taskId, startIso, endIso) {
   const project = getProjectById(projectId);
   if (!project || !taskId) return null;
+  const tasks = collectProjectTasks(project);
+  const task = tasks.find((item) => String(item.id) === String(taskId));
+  if (task?.dueDateLocked) {
+    showTypeToast("Data zakończenia nadrzędnego wynika z ostatniego podzadania");
+    return null;
+  }
   const start = startIso || "";
   const end = endIso || "";
-  const customTasks = (project.customTasks || []).map((task) =>
-    String(task.id) === String(taskId)
-      ? { ...task, startDate: start, dueDate: end, updatedAt: new Date().toISOString() }
-      : task
+  const customTasks = (project.customTasks || []).map((item) =>
+    String(item.id) === String(taskId)
+      ? { ...item, startDate: start, dueDate: end, updatedAt: new Date().toISOString() }
+      : item
   );
-  return persistProject({
+  let next = {
     ...project,
     customTasks,
     taskStartDates: { ...(project.taskStartDates || {}), [taskId]: start },
     taskDueDates: { ...(project.taskDueDates || {}), [taskId]: end },
     updatedAt: new Date().toISOString(),
-  });
+  };
+  next = recomputeProjectParentDueDates(next);
+  return persistProject(next);
 }
 
 function resolveGanttSpan(task) {
@@ -4410,24 +7249,58 @@ function resolveGanttSpan(task) {
 }
 
 function sortTasksForGantt(tasks, project) {
-  const order = Array.isArray(project?.taskGanttOrder) ? project.taskGanttOrder : [];
-  const rank = new Map(order.map((id, index) => [String(id), index]));
-  return [...tasks].sort((a, b) => {
-    const ai = rank.has(String(a.id)) ? rank.get(String(a.id)) : Number.MAX_SAFE_INTEGER;
-    const bi = rank.has(String(b.id)) ? rank.get(String(b.id)) : Number.MAX_SAFE_INTEGER;
-    if (ai !== bi) return ai - bi;
-    return String(a.name || "").localeCompare(String(b.name || ""), "pl");
-  });
+  // Kolejność = Flow / drzewo projektu (collectProjectTasks), nie ręczny drag
+  void project;
+  return Array.isArray(tasks) ? [...tasks] : [];
 }
 
 function persistGanttTaskOrder(projectId, orderedIds) {
-  const project = getProjectById(projectId);
-  if (!project) return null;
-  return persistProject({
-    ...project,
-    taskGanttOrder: orderedIds.map(String),
-    updatedAt: new Date().toISOString(),
+  // Zachowane dla kompatybilności — kolejność Gantta wynika z Flow
+  void projectId;
+  void orderedIds;
+  return getProjectById(projectId) || null;
+}
+
+function ganttTaskTreeHidden(projectId, task, tasksById, expandMap) {
+  let parentId = task.parentId;
+  while (parentId) {
+    const parent = tasksById.get(String(parentId));
+    if (!parent) break;
+    if (!isTaskNodeExpanded(projectId, parent, expandMap)) return true;
+    parentId = parent.parentId;
+  }
+  return false;
+}
+
+function buildGanttFlatRows(focusProject) {
+  const projects = loadProjects();
+  const focusId = String(focusProject.id);
+  const orderedProjects = [
+    ...projects.filter((p) => String(p.id) === focusId),
+    ...projects
+      .filter((p) => String(p.id) !== focusId)
+      .sort((a, b) =>
+        String(a.title || a.name || "").localeCompare(String(b.title || b.name || ""), "pl")
+      ),
+  ];
+
+  const flat = [];
+  orderedProjects.forEach((p) => {
+    const tasks = collectProjectTasks(p);
+    const expandMap = loadTaskExpandState(p.id);
+    const byId = new Map(tasks.map((task) => [String(task.id), task]));
+    tasks.forEach((task) => {
+      flat.push({
+        task,
+        span: resolveGanttSpan(task),
+        projectId: p.id,
+        projectTitle: p.title || p.name || "Projekt",
+        treeHidden: ganttTaskTreeHidden(p.id, task, byId, expandMap),
+        expanded: isTaskNodeExpanded(p.id, task, expandMap),
+      });
+    });
   });
+  return flat;
 }
 
 function ganttMultiFilterHtml(key, label, options, { preselectedIds = null, allChecked = true } = {}) {
@@ -4515,33 +7388,8 @@ function projectTasksGanttHtml(project, options = {}) {
     label: p.title || p.name || "Projekt",
   }));
 
-  const flat = [];
-  projects.forEach((p) => {
-    sortTasksForGantt(collectProjectTasks(p), p).forEach((task) => {
-      flat.push({
-        task,
-        span: resolveGanttSpan(task),
-        projectId: p.id,
-        projectTitle: p.title || p.name || "Projekt",
-      });
-    });
-  });
-
-  const orderKeys = Array.isArray(project.taskGanttOrder) ? project.taskGanttOrder : [];
-  const rank = new Map(orderKeys.map((key, index) => [String(key), index]));
-  flat.sort((a, b) => {
-    const ak = `${a.projectId}::${a.task.id}`;
-    const bk = `${b.projectId}::${b.task.id}`;
-    const ai = rank.has(ak) ? rank.get(ak) : Number.MAX_SAFE_INTEGER;
-    const bi = rank.has(bk) ? rank.get(bk) : Number.MAX_SAFE_INTEGER;
-    if (ai !== bi) return ai - bi;
-    if (a.projectId === focusId && b.projectId !== focusId) return -1;
-    if (b.projectId === focusId && a.projectId !== focusId) return 1;
-    return String(a.task.name || "").localeCompare(String(b.task.name || ""), "pl");
-  });
-
+  const flat = buildGanttFlatRows(project);
   const scheduled = flat.filter((row) => row.span);
-  const unscheduled = flat.filter((row) => !row.span);
 
   const scaleToggle = `
     <div class="gantt-scale" role="group" aria-label="Skala czasu">
@@ -4582,14 +7430,14 @@ function projectTasksGanttHtml(project, options = {}) {
   );
   rangeEnd = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), rangeEnd.getDate() + padFuture);
 
-  if (!scheduled.length) {
+  if (!flat.length) {
     return `
       <div class="tasks-gantt" data-role="tasks-gantt-view" data-project-id="${project.id}">
         <div class="gantt-toolbar">
           <div>
             <p class="eyebrow">Widok Gantta</p>
-            <h3 class="gantt-empty-title">Brak dat do harmonogramu</h3>
-            <p class="muted">Uzupełnij datę rozpoczęcia lub zakończenia prac, aby zobaczyć paski na osi czasu.</p>
+            <h3 class="gantt-empty-title">Brak zadań</h3>
+            <p class="muted">Wygeneruj Flow projektu, aby zobaczyć harmonogram.</p>
           </div>
           <div class="gantt-toolbar-actions">
             ${filtersHtml}
@@ -4618,89 +7466,117 @@ function projectTasksGanttHtml(project, options = {}) {
     })
     .join("");
 
-  const bodyRows = scheduled
-    .map(({ task, span, projectId, projectTitle }) => {
-      const left = ganttDayDiff(rangeStart, span.start) * dayWidth;
-      const width = Math.max(dayWidth, (ganttDayDiff(span.start, span.end) + 1) * dayWidth);
+  const bodyRows = flat
+    .map(({ task, span, projectId, projectTitle, treeHidden, expanded }) => {
       const owner = ownerLabel(
         projects.find((p) => p.id === projectId) || project,
         task.ownerId
       );
-      const startIso = toIsoDateOnly(span.start);
-      const endIso = toIsoDateOnly(span.end);
-      const progress = Number.isFinite(Number(task.progress)) ? Math.round(Number(task.progress)) : 0;
-      const dateLine = `${formatDateOnly(startIso)} – ${formatDateOnly(endIso)}`;
-      const tip = [task.name, dateLine, projectTitle, owner, task.status, `${progress}%`].join(" · ");
+      const progress = Number.isFinite(Number(task.progress))
+        ? Math.round(Number(task.progress))
+        : 0;
+      const depth = task.depth || 0;
+      const startIso = span ? toIsoDateOnly(span.start) : "";
+      const endIso = span ? toIsoDateOnly(span.end) : "";
+      const dateLine = span
+        ? `${formatDateOnly(startIso)} – ${formatDateOnly(endIso)}`
+        : "Bez dat";
+      const tip = [task.name, dateLine, projectTitle, owner, task.status, `${progress}%`].join(
+        " · "
+      );
       const defaultHidden =
-        !projectFilterAll && String(projectId) !== focusId ? " hidden" : "";
-      return `
-        <div
-          class="gantt-row"
-          data-role="gantt-row"
-          data-task-id="${escapeHtml(task.id)}"
-          data-project-id="${escapeHtml(projectId)}"
-          data-owner-id="${escapeHtml(String(task.ownerId || ""))}"
-          data-status-key="${escapeHtml(task.statusKey || "")}"
-          ${defaultHidden}
-        >
-          <div
-            class="gantt-label"
-            data-role="gantt-reorder"
-            data-task-id="${escapeHtml(task.id)}"
+        treeHidden || (!projectFilterAll && String(projectId) !== focusId);
+      const left = span ? ganttDayDiff(rangeStart, span.start) * dayWidth : 0;
+      const width = span
+        ? Math.max(dayWidth, (ganttDayDiff(span.start, span.end) + 1) * dayWidth)
+        : 0;
+      const expandBtn = task.hasChildren
+        ? `<button
+            type="button"
+            class="gantt-tree-toggle${expanded ? " is-expanded" : ""}"
+            data-role="gantt-toggle-expand"
             data-project-id="${escapeHtml(projectId)}"
-            draggable="true"
-            title="Przeciągnij, aby zmienić kolejność"
+            data-task-id="${escapeHtml(task.id)}"
+            aria-expanded="${expanded ? "true" : "false"}"
+            title="${expanded ? "Zwiń" : "Rozwiń"}"
+            aria-label="${expanded ? "Zwiń podzadania" : "Rozwiń podzadania"}"
           >
-            <strong>${escapeHtml(task.name)}</strong>
-            <span class="gantt-label-dates">${escapeHtml(dateLine)}</span>
-          </div>
-          <div class="gantt-track" style="width:${timelineWidth}px;background-size:${dayWidth}px 100%">
-            <div
-              class="gantt-bar gantt-bar-${escapeHtml(task.statusKey || "todo")}"
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>`
+        : `<span class="gantt-tree-toggle-spacer" aria-hidden="true"></span>`;
+      const autoOn = isProjectAutoScheduleEnabled(
+        projects.find((p) => String(p.id) === String(projectId)) || project
+      );
+      const scheduleLocked = Boolean(task.hasChildren && autoOn);
+      const barHtml = span
+        ? `<div
+              class="gantt-bar gantt-bar-${escapeHtml(task.statusKey || "todo")}${
+                scheduleLocked ? " is-summary" : ""
+              }"
               data-role="gantt-bar"
               data-task-id="${escapeHtml(task.id)}"
               data-project-id="${escapeHtml(projectId)}"
+              data-parent-id="${escapeHtml(task.parentId || "")}"
+              data-summary="${scheduleLocked ? "1" : "0"}"
+              data-due-locked="${task.dueDateLocked ? "1" : "0"}"
               data-start="${escapeHtml(startIso)}"
               data-end="${escapeHtml(endIso)}"
               style="left:${left}px;width:${width}px"
               title="${escapeHtml(tip)}"
             >
-              <span class="gantt-bar-handle is-start" data-role="gantt-resize" data-edge="start" title="Rozciągnij początek"></span>
+              <button
+                type="button"
+                class="gantt-bar-link-plus"
+                data-role="gantt-dep-port"
+                data-edge="out"
+                title="Połącz z innym zadaniem"
+                aria-label="Narysuj powiązanie"
+              >+</button>
+              ${
+                scheduleLocked
+                  ? ""
+                  : `<span class="gantt-bar-handle is-start" data-role="gantt-resize" data-edge="start" title="Rozciągnij początek"></span>`
+              }
               <span class="gantt-bar-label">${escapeHtml(task.name)}</span>
               <span class="gantt-bar-pct">${progress}%</span>
-              <span class="gantt-bar-handle is-end" data-role="gantt-resize" data-edge="end" title="Rozciągnij koniec"></span>
+              ${
+                scheduleLocked
+                  ? ""
+                  : `<span class="gantt-bar-handle is-end" data-role="gantt-resize" data-edge="end" title="Rozciągnij koniec"></span>`
+              }
+            </div>`
+        : "";
+      return `
+        <div
+          class="gantt-row${task.hasChildren ? " has-children" : ""}${
+            treeHidden ? " is-tree-hidden" : ""
+          }"
+          data-role="gantt-row"
+          data-task-id="${escapeHtml(task.id)}"
+          data-project-id="${escapeHtml(projectId)}"
+          data-parent-id="${escapeHtml(task.parentId || "")}"
+          data-depth="${depth}"
+          data-owner-id="${escapeHtml(String(task.ownerId || ""))}"
+          data-status-key="${escapeHtml(task.statusKey || "")}"
+          data-tree-hidden="${treeHidden ? "1" : "0"}"
+          style="--gantt-depth:${depth}"
+          ${defaultHidden ? "hidden" : ""}
+        >
+          <div class="gantt-label">
+            ${expandBtn}
+            <div class="gantt-label-copy">
+              <strong>${escapeHtml(task.name)}</strong>
+              <span class="gantt-label-dates">${escapeHtml(dateLine)}</span>
             </div>
+          </div>
+          <div class="gantt-track" style="width:${timelineWidth}px;background-size:${dayWidth}px 100%">
+            ${barHtml}
           </div>
         </div>`;
     })
     .join("");
-
-  const unscheduledHtml = unscheduled.length
-    ? `<details class="gantt-unscheduled-fold">
-        <summary>Bez dat (<span data-role="gantt-unscheduled-count">${
-          projectFilterAll
-            ? unscheduled.length
-            : unscheduled.filter((r) => String(r.projectId) === focusId).length
-        }</span>)</summary>
-        <ul class="gantt-unscheduled">
-          ${unscheduled
-            .map((row) => {
-              const defaultHidden =
-                !projectFilterAll && String(row.projectId) !== focusId ? " hidden" : "";
-              return `<li
-                data-role="gantt-unscheduled-item"
-                data-project-id="${escapeHtml(row.projectId)}"
-                data-owner-id="${escapeHtml(String(row.task.ownerId || ""))}"
-                data-status-key="${escapeHtml(row.task.statusKey || "")}"
-                ${defaultHidden}
-              ><strong>${escapeHtml(row.task.name)}</strong><span>${escapeHtml(
-                row.projectTitle
-              )}</span></li>`;
-            })
-            .join("")}
-        </ul>
-      </details>`
-    : "";
 
   return `
     <div
@@ -4719,7 +7595,7 @@ function projectTasksGanttHtml(project, options = {}) {
             ${escapeHtml(formatDateOnly(toIsoDateOnly(rangeStart)))}
             –
             ${escapeHtml(formatDateOnly(toIsoDateOnly(rangeEnd)))}
-            · przeciągnij paski i kolejność w kolumnie Zadanie
+            · kolejność i drzewo jak we Flow
           </p>
         </div>
         <div class="gantt-toolbar-actions">
@@ -4727,8 +7603,8 @@ function projectTasksGanttHtml(project, options = {}) {
           ${scaleToggle}
         </div>
       </div>
-      <div class="gantt-scroll" data-role="gantt-pan" title="Chwyć i przeciągnij, aby przesunąć oś czasu">
-        <div class="gantt-chart" style="--gantt-label-width:16.5rem;--gantt-day-width:${dayWidth}px;--gantt-timeline-width:${timelineWidth}px">
+      <div class="gantt-scroll" data-role="gantt-pan" title="Przeciągnij w poziomie, aby przesunąć oś czasu">
+        <div class="gantt-chart" style="--gantt-label-width:18rem;--gantt-day-width:${dayWidth}px;--gantt-timeline-width:${timelineWidth}px">
           <div class="gantt-head">
             <div class="gantt-label-head">Zadanie</div>
             <div class="gantt-timeline-head" style="width:${timelineWidth}px;background-size:${dayWidth}px 100%">
@@ -4741,6 +7617,7 @@ function projectTasksGanttHtml(project, options = {}) {
             </div>
           </div>
           <div class="gantt-body" data-role="gantt-body">
+            <svg class="gantt-dep-svg" data-role="gantt-dep-svg" aria-hidden="true"></svg>
             ${bodyRows}
           </div>
           ${
@@ -4752,27 +7629,510 @@ function projectTasksGanttHtml(project, options = {}) {
           }
         </div>
       </div>
-      ${unscheduledHtml}
+    </div>`;
+}
+
+function formatTaskDaysCount(days) {
+  const n = Math.max(0, Math.round(Number(days) || 0));
+  if (n === 1) return "1 dzień";
+  return `${n} dni`;
+}
+
+function taskDisplaySpanDays(task) {
+  if (task?.startDate && task?.dueDate) {
+    const start = parseTaskDateOnly(task.startDate);
+    const end = parseTaskDateOnly(task.dueDate);
+    if (start && end && end >= start) return ganttDayDiff(start, end) + 1;
+  }
+  if (task?.durationDays > 0) return Number(task.durationDays);
+  return null;
+}
+
+function projectInstanceDocsPanelHtml(project) {
+  const path = {
+    id: "project-flow",
+    name: project.flowInstance?.sourcePathName || "Flow projektu",
+    tasks: project.flowInstance?.tasks || [],
+  };
+  const linkedDocIds = getLinkedDocIdsForPath(path);
+  const docs = projectFlowDocCatalog(project);
+  const groups = [];
+  const byGroup = new Map();
+  docs.forEach((doc) => {
+    const key = doc.group || "Inne";
+    if (!byGroup.has(key)) {
+      byGroup.set(key, []);
+      groups.push(key);
+    }
+    byGroup.get(key).push(doc);
+  });
+
+  return `
+    <button
+      type="button"
+      class="workflow-docs-reopen"
+      data-role="workflow-docs-toggle"
+      aria-label="Pokaż dokumenty"
+      title="Pokaż dokumenty"
+      ${isWorkflowDocsCollapsed() ? "" : "hidden"}
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+        <path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      <span>Dokumenty</span>
+    </button>
+    <article class="panel workflow-docs-panel" data-role="workflow-documents" ${
+      isWorkflowDocsCollapsed() ? "hidden" : ""
+    }>
+      <div class="panel-head panel-head-actions">
+        <h2>Dokumenty</h2>
+        <div class="workflow-docs-head-tools">
+          <span class="workflow-docs-count">${docs.length}</span>
+          <button
+            type="button"
+            class="workflow-docs-collapse"
+            data-role="workflow-docs-toggle"
+            aria-label="Ukryj dokumenty"
+            title="Ukryj dokumenty"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <p class="config-lead">
+        Przeciągnij dokument na zadanie, aby powiązać. Zmiany dotyczą instancji projektu (nie wzorca Workflow).
+      </p>
+      <div class="workflow-docs-scroll" data-role="workflow-docs-drop">
+        ${groups
+          .map((group) => {
+            const items = byGroup.get(group) || [];
+            return `
+            <section class="workflow-doc-group">
+              <h3 class="workflow-doc-group-title">${escapeHtml(group)}</h3>
+              <ul class="workflow-doc-list">
+                ${items
+                  .map((doc) => {
+                    const linked = linkedDocIds.has(doc.id);
+                    return `
+                  <li
+                    class="workflow-doc-item${linked ? " is-linked" : ""}"
+                    data-doc-id="${escapeHtml(doc.id)}"
+                    data-doc-source="${escapeHtml(
+                      doc.source === "system"
+                        ? "system"
+                        : doc.source === "standard"
+                          ? "standard"
+                          : doc.source === "flow"
+                            ? "flow"
+                            : "warunkowy"
+                    )}"
+                    draggable="true"
+                    data-role="workflow-doc-item"
+                    title="Przeciągnij na zadanie, aby powiązać"
+                  >
+                    <div class="workflow-doc-main">
+                      <span class="workflow-doc-title">${escapeHtml(doc.title)}</span>
+                      ${
+                        doc.ruleHint
+                          ? `<span class="workflow-doc-hint">${escapeHtml(doc.ruleHint)}</span>`
+                          : ""
+                      }
+                    </div>
+                    <div class="workflow-doc-side">
+                      ${
+                        linked
+                          ? `<div class="workflow-doc-linked-actions">
+                              <span class="workflow-doc-check" title="Powiązany" aria-label="Powiązany">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                                  <path d="M5 12.5 10 17.5 19 7.5" stroke-linecap="round" stroke-linejoin="round" />
+                                </svg>
+                              </span>
+                              <button
+                                type="button"
+                                class="workflow-doc-locate"
+                                data-role="workflow-locate-task"
+                                data-doc-id="${escapeHtml(doc.id)}"
+                                title="Pokaż zadanie"
+                                aria-label="Pokaż zadanie"
+                              >
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                  <circle cx="12" cy="12" r="3.2" />
+                                  <path d="M12 3.5v2.8M12 17.7v2.8M3.5 12h2.8M17.7 12h2.8" stroke-linecap="round" />
+                                </svg>
+                              </button>
+                            </div>`
+                          : `<span class="workflow-doc-meta">${escapeHtml(
+                              doc.source === "system"
+                                ? "system"
+                                : doc.source === "standard"
+                                  ? "standard"
+                                  : doc.source === "flow"
+                                    ? "flow"
+                                    : "warunkowy"
+                            )}</span>`
+                      }
+                    </div>
+                  </li>`;
+                  })
+                  .join("")}
+              </ul>
+            </section>`;
+          })
+          .join("")}
+      </div>
+      ${workflowCreateUnassignedDocsButtonHtml(
+        docs.filter((doc) => !linkedDocIds.has(doc.id)).length
+      )}
+    </article>`;
+}
+
+function projectTasksCardsHtml(project) {
+  const tasks = collectProjectTasks(project);
+  const expandMap = loadTaskExpandState(project.id);
+  const treeHidden = getTaskTreeHiddenIdSet(project.id, tasks);
+  const flowTasks = project.flowInstance?.tasks || [];
+  const flowMap = new Map(flowTasks.map((task) => [String(task.id), task]));
+  const taskMap = new Map(tasks.map((task) => [String(task.id), task]));
+
+  const items = tasks
+    .map((task) => {
+      const depth = task.depth || 0;
+      const expanded = isTaskNodeExpanded(project.id, task, expandMap);
+      const hidden = treeHidden.has(String(task.id));
+      const ownerName = ownerLabel(project, task.ownerId);
+      const startLabel = task.startDate ? formatDateOnly(task.startDate) : "—";
+      const dueLabel = task.dueDate ? formatDateOnly(task.dueDate) : "—";
+      const spanDays = taskDisplaySpanDays(task);
+      const linkedLabel = task.linkedDoc
+        ? resolveLinkedDocLabel(project, task.linkedDoc)
+        : "";
+      const flowTask = flowMap.get(String(task.id));
+      const blockedBy = (flowTask?.blockedBy || task.dependsOn || [])
+        .map((id) => ({ id, name: taskMap.get(String(id))?.name || flowMap.get(String(id))?.name }))
+        .filter((item) => item.name);
+      const flowControls = flowTask
+        ? `<div class="tasks-card-flow-controls">
+            <button
+              type="button"
+              class="ghost-btn tasks-card-mini-btn"
+              data-role="workflow-add-child"
+              data-task-id="${escapeHtml(task.id)}"
+            >+ Podrzędne</button>
+            <button
+              type="button"
+              class="ghost-btn tasks-card-mini-btn"
+              data-role="workflow-set-blocks"
+              data-task-id="${escapeHtml(task.id)}"
+            >Wymaga</button>
+            <button
+              type="button"
+              class="ghost-btn tasks-card-mini-btn is-danger"
+              data-role="delete-project-task"
+              data-task-id="${escapeHtml(task.id)}"
+              data-project-id="${escapeHtml(project.id)}"
+            >Usuń</button>
+          </div>`
+        : `<div class="tasks-card-flow-controls">
+            <button
+              type="button"
+              class="ghost-btn tasks-card-mini-btn"
+              data-role="open-add-task"
+              data-project-id="${escapeHtml(project.id)}"
+              data-parent-task-id="${escapeHtml(task.id)}"
+            >+ Podrzędne</button>
+            <button
+              type="button"
+              class="ghost-btn tasks-card-mini-btn is-danger"
+              data-role="delete-project-task"
+              data-task-id="${escapeHtml(task.id)}"
+              data-project-id="${escapeHtml(project.id)}"
+            >Usuń</button>
+          </div>`;
+      const expandBtn = task.hasChildren
+        ? `<button
+            type="button"
+            class="workflow-task-toggle${expanded ? " is-expanded" : ""}"
+            data-role="toggle-task-expand"
+            data-project-id="${escapeHtml(project.id)}"
+            data-task-id="${escapeHtml(task.id)}"
+            aria-expanded="${expanded ? "true" : "false"}"
+            title="${expanded ? "Zwiń" : "Rozwiń"}"
+            aria-label="${expanded ? "Zwiń podzadania" : "Rozwiń podzadania"}"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>`
+        : `<span class="workflow-task-toggle-spacer" aria-hidden="true"></span>`;
+
+      return `
+        <li
+          class="workflow-task-item tasks-card-item${hidden ? " is-collapsed-hidden" : ""}${
+            task.hasChildren ? " has-children" : ""
+          }"
+          style="--wf-depth:${depth}"
+          data-role="open-task"
+          data-task-kind="${escapeHtml(task.kind)}"
+          data-task-id="${escapeHtml(task.id)}"
+          data-project-id="${escapeHtml(project.id)}"
+          data-parent-id="${escapeHtml(task.parentId || "")}"
+          data-depth="${depth}"
+          data-filter-search="${escapeHtml(
+            [
+              task.name,
+              task.typeLabel,
+              ownerName,
+              startLabel,
+              dueLabel,
+              task.status,
+              `${task.progress}%`,
+              linkedLabel,
+              task.description || "",
+            ]
+              .join(" ")
+              .toLowerCase()
+          )}"
+          draggable="true"
+        >
+          <div class="workflow-task-card tasks-card-tile" data-task-depth="${depth}">
+            <span class="workflow-nest-hint" aria-hidden="true">Upuść, aby zagnieździć</span>
+            <div class="workflow-link-doc-hint" data-role="workflow-link-doc-hint">
+              Upuść, aby powiązać dokument
+            </div>
+            <div class="workflow-task-top tasks-card-top">
+              <button
+                type="button"
+                class="workflow-task-drag"
+                data-role="tasks-card-drag-handle"
+                title="Przeciągnij, aby zmienić kolejność"
+                aria-label="Przeciągnij zadanie"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path d="M8 7h8M8 12h8M8 17h8" stroke-linecap="round" />
+                </svg>
+              </button>
+              ${expandBtn}
+              <div class="workflow-task-main tasks-card-main">
+                <div class="tasks-card-headline">
+                  <button
+                    type="button"
+                    class="tasks-card-title"
+                    data-role="open-task-title"
+                    data-project-id="${escapeHtml(project.id)}"
+                    data-task-id="${escapeHtml(task.id)}"
+                    data-task-kind="${escapeHtml(task.kind)}"
+                  >${escapeHtml(task.name)}</button>
+                  <div class="tasks-card-schedule-readout" title="Harmonogram (tylko podgląd)">
+                    <span class="tasks-card-range-big">
+                      <em>Od</em> <strong>${escapeHtml(startLabel)}</strong>
+                      <span class="tasks-card-range-sep">→</span>
+                      <em>Do</em> <strong>${escapeHtml(dueLabel)}</strong>
+                    </span>
+                    <span class="tasks-card-days-big">${
+                      spanDays != null ? escapeHtml(formatTaskDaysCount(spanDays)) : "—"
+                    }</span>
+                  </div>
+                </div>
+                <div class="tasks-card-meta-row">
+                  <span class="task-type-pill">${escapeHtml(task.typeLabel || "Zadanie")}</span>
+                  ${taskNameIconsHtml(project, task)}
+                  <span class="tasks-card-progress-inline">
+                    <span class="fill-bar" aria-hidden="true"><span style="width:${task.progress}%"></span></span>
+                    <strong>${task.progress}%</strong>
+                  </span>
+                </div>
+                ${
+                  linkedLabel
+                    ? `<span
+                        class="workflow-task-doc"
+                        draggable="true"
+                        data-role="workflow-task-doc"
+                        data-doc-id="${escapeHtml(task.linkedDoc?.id || task.docId || "")}"
+                        data-task-id="${escapeHtml(task.id)}"
+                        title="Przeciągnij na listę dokumentów, aby odpiąć"
+                      >${escapeHtml(linkedLabel)}</span>`
+                    : ""
+                }
+                ${
+                  blockedBy.length
+                    ? `<div class="workflow-dep-chips">
+                        ${blockedBy
+                          .map(
+                            (item) => `
+                          <span class="workflow-dep-chip">
+                            <span>Wymaga: ${escapeHtml(item.name)}</span>
+                            <button
+                              type="button"
+                              class="workflow-dep-chip-remove"
+                              data-role="workflow-remove-dep"
+                              data-from="${escapeHtml(item.id)}"
+                              data-to="${escapeHtml(task.id)}"
+                              title="Usuń powiązanie"
+                              aria-label="Usuń powiązanie"
+                            >×</button>
+                          </span>`
+                          )
+                          .join("")}
+                      </div>`
+                    : ""
+                }
+                ${flowControls}
+              </div>
+              <div class="tasks-card-side">
+                <label class="tasks-card-field" title="Właściciel">
+                  <span class="tasks-card-field-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                      <circle cx="12" cy="8" r="3" />
+                      <path d="M5.5 18.5c1.2-2.8 3.2-4.2 6.5-4.2s5.3 1.4 6.5 4.2" stroke-linecap="round" />
+                    </svg>
+                  </span>
+                  <select
+                    class="owner-select"
+                    data-role="task-owner"
+                    data-task-id="${escapeHtml(task.id)}"
+                    data-project-id="${escapeHtml(project.id)}"
+                    aria-label="Właściciel zadania"
+                  >
+                    ${taskOwnerOptionsHtml(project, task.ownerId)}
+                  </select>
+                </label>
+                <label class="tasks-card-field" title="Status">
+                  <span class="tasks-card-field-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+                      <circle cx="12" cy="12" r="8.25" />
+                      <path d="M8.5 12.2 11 14.7 15.5 9.5" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                  </span>
+                  <select
+                    class="owner-select status-select"
+                    data-role="task-status"
+                    data-task-id="${escapeHtml(task.id)}"
+                    data-project-id="${escapeHtml(project.id)}"
+                    aria-label="Status zadania"
+                  >
+                    ${taskStatusOptionsHtml(task.statusKey)}
+                  </select>
+                </label>
+                <div class="tasks-card-date" data-col="start" title="Edycja daty rozpoczęcia">
+                  <span class="tasks-card-date-label">Od</span>
+                  ${
+                    task.startDateLocked
+                      ? `<span class="task-date-readonly">${
+                          task.startDate
+                            ? escapeHtml(formatDateOnly(task.startDate))
+                            : "—"
+                        }</span>`
+                      : taskDateControlHtml(project, task, {
+                          value: task.startDate,
+                          inputRole: "task-start",
+                          openRole: "open-task-start",
+                          label: "Data rozpoczęcia",
+                        })
+                  }
+                </div>
+                <div class="tasks-card-date" data-col="due" title="Edycja daty zakończenia">
+                  <span class="tasks-card-date-label">Do</span>
+                  ${
+                    task.dueDateLocked
+                      ? `<span class="task-date-readonly" title="Data zakończenia wynika z ostatniego podzadania">${
+                          task.dueDate
+                            ? escapeHtml(formatDateOnly(task.dueDate))
+                            : "—"
+                        }</span>`
+                      : taskDateControlHtml(project, task, {
+                          value: task.dueDate,
+                          inputRole: "task-due",
+                          openRole: "open-task-due",
+                          label: "Data zakończenia prac",
+                        })
+                  }
+                </div>
+              </div>
+            </div>
+          </div>
+        </li>`;
+    })
+    .join("");
+
+  return `
+    <div class="tasks-cards" data-role="tasks-cards-view" data-project-id="${escapeHtml(
+      project.id
+    )}">
+      <div class="tasks-cards-toolbar">
+        <label class="tasks-search search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <circle cx="11" cy="11" r="6.5" />
+            <path d="m16 16 4 4" stroke-linecap="round" />
+          </svg>
+          <input
+            type="search"
+            data-role="filter-task-search"
+            placeholder="Szukaj zadań…"
+            aria-label="Wyszukaj zadania"
+            autocomplete="off"
+          />
+        </label>
+        <p class="table-filter-meta" data-role="task-filter-count">${tasks.length} zadań</p>
+        <button
+          type="button"
+          class="ghost-btn table-action-btn"
+          data-role="tasks-cards-add-root"
+          data-project-id="${escapeHtml(project.id)}"
+          title="Dodaj zadanie główne do Flow projektu"
+        >+ Zadanie główne</button>
+        <button type="button" class="ghost-btn table-action-btn" data-role="tasks-expand-all" data-project-id="${escapeHtml(
+          project.id
+        )}">
+          Rozwiń wszystko
+        </button>
+        <button type="button" class="ghost-btn table-action-btn" data-role="tasks-collapse-roots" data-project-id="${escapeHtml(
+          project.id
+        )}">
+          Zwiń wszystko
+        </button>
+      </div>
+      <div class="workflow-layout tasks-cards-layout${
+        isWorkflowDocsCollapsed() ? " is-docs-collapsed" : ""
+      }" data-role="workflow-layout">
+        <aside class="panel workflow-tasks-panel tasks-cards-tasks-panel" data-role="workflow-tasks">
+          ${
+            tasks.length
+              ? `<div class="workflow-task-canvas" data-role="workflow-task-canvas">
+                  <svg class="workflow-dep-svg" data-role="workflow-dep-svg" aria-hidden="true"></svg>
+                  <ul class="workflow-task-list tasks-cards-list" data-role="workflow-task-list">
+                    ${items}
+                  </ul>
+                </div>`
+              : `<p class="tasks-cards-empty muted">Brak zadań — wygeneruj Flow lub dodaj zadanie.</p>`
+          }
+        </aside>
+        ${projectInstanceDocsPanelHtml(project)}
+      </div>
     </div>`;
 }
 
 function projectTasksPanelHtml(project, options = {}) {
   const global = Boolean(options.global);
   const tasks = collectProjectTasks(project);
-  const viewMode = getTasksViewMode();
+  const viewMode = global ? "table" : getTasksViewMode();
   const surveyCount = project.formalSurvey?.documents?.length || 0;
   const surveyTooltip = surveyCount
-    ? "Edytuj ankietę formalną — zaktualizuj listę zadań / dokumentów"
-    : "Uruchom ankietę formalną — wygeneruj dokumenty (zadania) do złożenia";
+    ? "Edytuj ankietę formalną — zaktualizuj listę dokumentów"
+    : "Uruchom ankietę formalną — wygeneruj dokumenty do złożenia";
   const tableId = "project-tasks";
-  const body =
-    viewMode === "kanban"
-      ? projectTasksKanbanHtml(project, { projectFilterAll: global })
-      : viewMode === "gantt"
-        ? projectTasksGanttHtml(project, { projectFilterAll: global })
-        : global
-          ? globalTasksTableHtml()
-          : projectTasksTableBodyHtml(project, tasks, tableId);
+  const body = global
+    ? globalTasksTableHtml()
+    : viewMode === "flow"
+      ? projectFlowViewHtml(project)
+      : viewMode === "kanban"
+        ? projectTasksKanbanHtml(project)
+        : viewMode === "gantt"
+          ? projectTasksGanttHtml(project)
+          : viewMode === "cards"
+            ? projectTasksCardsHtml(project)
+            : projectTasksTableBodyHtml(project, tasks, tableId);
 
   return `
     <article
@@ -4785,7 +8145,10 @@ function projectTasksPanelHtml(project, options = {}) {
       <div class="panel-head panel-head-actions">
         <h2>${global ? "Zadania (wszystkie projekty)" : "Zadania"}</h2>
         <div class="panel-head-tools">
-          <button
+          ${
+            global
+              ? ""
+              : `<button
             type="button"
             class="tool-btn tool-btn-muted add-task-btn"
             data-role="open-add-task"
@@ -4797,10 +8160,7 @@ function projectTasksPanelHtml(project, options = {}) {
               <path d="M12 5v14M5 12h14" stroke-linecap="round" />
             </svg>
           </button>
-          ${
-            global
-              ? ""
-              : `<button
+          <button
             type="button"
             class="tool-btn tool-btn-muted survey-launch-btn"
             data-role="open-formal-survey"
@@ -4812,8 +8172,24 @@ function projectTasksPanelHtml(project, options = {}) {
               <path d="M8 4h8a1 1 0 0 1 1 1v15l-5-2.5L7 20V5a1 1 0 0 1 1-1Z" />
               <path d="M10 9h4M10 13h4" stroke-linecap="round" />
             </svg>
-          </button>`
-          }
+          </button>
+          <button
+            type="button"
+            class="tool-btn tool-btn-muted view-mode-btn ${viewMode === "flow" ? "is-active" : ""}"
+            data-role="tasks-flow"
+            data-project-id="${project.id}"
+            title="Widok Flow"
+            aria-label="Widok Flow"
+            aria-pressed="${viewMode === "flow" ? "true" : "false"}"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path d="M5 7h6M13 7h6M8 7v10M16 7v4M8 17h4M16 11h3" stroke-linecap="round" stroke-linejoin="round" />
+              <circle cx="8" cy="7" r="1.4" fill="currentColor" stroke="none" />
+              <circle cx="16" cy="7" r="1.4" fill="currentColor" stroke="none" />
+              <circle cx="12" cy="17" r="1.4" fill="currentColor" stroke="none" />
+              <circle cx="19" cy="11" r="1.4" fill="currentColor" stroke="none" />
+            </svg>
+          </button>
           <button
             type="button"
             class="tool-btn tool-btn-muted view-mode-btn ${viewMode === "table" ? "is-active" : ""}"
@@ -4826,6 +8202,21 @@ function projectTasksPanelHtml(project, options = {}) {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
               <rect x="3.5" y="4.5" width="17" height="15" rx="1.5" />
               <path d="M3.5 9.5h17M3.5 14.5h17M9 4.5v15M15 4.5v15" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="tool-btn tool-btn-muted view-mode-btn ${viewMode === "cards" ? "is-active" : ""}"
+            data-role="tasks-cards"
+            data-project-id="${project.id}"
+            title="Widok listy (kafelki)"
+            aria-label="Widok listy (kafelki)"
+            aria-pressed="${viewMode === "cards" ? "true" : "false"}"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <rect x="4" y="4.5" width="16" height="4.5" rx="1.2" />
+              <rect x="4" y="10.75" width="16" height="4.5" rx="1.2" />
+              <rect x="4" y="17" width="16" height="3.5" rx="1.2" />
             </svg>
           </button>
           <button
@@ -4869,11 +8260,192 @@ function projectTasksPanelHtml(project, options = {}) {
               <path d="M12 3.75v8.25h8.25" stroke-linecap="round" stroke-linejoin="round" />
               <path d="M12 12 6.2 18.4" stroke-linecap="round" />
             </svg>
-          </button>
+          </button>`
+          }
         </div>
       </div>
       ${body}
     </article>`;
+}
+
+function projectFlowViewHtml(project) {
+  const inst = project.flowInstance;
+  const hasTasks = Array.isArray(inst?.tasks) && inst.tasks.length > 0;
+  if (!hasTasks) {
+    return `
+      <div class="project-flow-empty" data-role="project-flow-empty">
+        <p class="eyebrow">Flow projektu</p>
+        <h3>Wybierz predefiniowany flow</h3>
+        <p>
+          Ankieta wskazuje dokumenty do obsługi. Flow opisuje kroki wokół tych dokumentów.
+          Bez ankiety wystarczy gałąź wokół <strong>Projektu budowlanego</strong>.
+          Z ankietą generujemy także zadania dla jej dokumentów — Projekt budowlany zawsze wchodzi w skład.
+        </p>
+        <button
+          type="button"
+          class="primary-btn"
+          data-role="project-flow-pick"
+          data-project-id="${escapeHtml(project.id)}"
+        >Wybierz flow i generuj</button>
+      </div>`;
+  }
+
+  const path = {
+    id: "project-flow",
+    name: inst.sourcePathName || "Flow projektu",
+    createdAt: inst.generatedAt || "",
+    tasks: inst.tasks,
+  };
+  const linkedDocIds = getLinkedDocIdsForPath(path);
+  const docs = projectFlowDocCatalog(project);
+  const groups = [];
+  const byGroup = new Map();
+  docs.forEach((doc) => {
+    const key = doc.group || "Inne";
+    if (!byGroup.has(key)) {
+      byGroup.set(key, []);
+      groups.push(key);
+    }
+    byGroup.get(key).push(doc);
+  });
+
+  return `
+    <div class="project-flow-view" data-role="project-flow-view" data-project-id="${escapeHtml(
+      project.id
+    )}">
+      <div class="project-flow-toolbar">
+        <p class="project-flow-source">
+          Wzorzec: <strong>${escapeHtml(inst.sourcePathName || "Flow")}</strong>
+        </p>
+        <button
+          type="button"
+          class="ghost-btn"
+          data-role="project-flow-pick"
+          data-project-id="${escapeHtml(project.id)}"
+        >Generuj ponownie / scal</button>
+      </div>
+      <div class="workflow-layout${isWorkflowDocsCollapsed() ? " is-docs-collapsed" : ""}" data-role="workflow-layout">
+        ${workflowTasksPanelHtml(path)}
+        <button
+          type="button"
+          class="workflow-docs-reopen"
+          data-role="workflow-docs-toggle"
+          aria-label="Pokaż dokumenty"
+          title="Pokaż dokumenty"
+          ${isWorkflowDocsCollapsed() ? "" : "hidden"}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span>Dokumenty</span>
+        </button>
+        <article class="panel workflow-docs-panel" data-role="workflow-documents" ${
+          isWorkflowDocsCollapsed() ? "hidden" : ""
+        }>
+          <div class="panel-head panel-head-actions">
+            <h2>Dokumenty</h2>
+            <div class="workflow-docs-head-tools">
+              <span class="workflow-docs-count">${docs.length}</span>
+              <button
+                type="button"
+                class="workflow-docs-collapse"
+                data-role="workflow-docs-toggle"
+                aria-label="Ukryj dokumenty"
+                title="Ukryj dokumenty"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <p class="config-lead">
+            Dokumenty z ankiety oraz Projekt budowlany. Pełny katalog jest w zakładce Workflow (schemat).
+          </p>
+          <div class="workflow-docs-scroll" data-role="workflow-docs-drop">
+            ${groups
+              .map((group) => {
+                const items = byGroup.get(group) || [];
+                return `
+                <section class="workflow-doc-group">
+                  <h3 class="workflow-doc-group-title">${escapeHtml(group)}</h3>
+                  <ul class="workflow-doc-list">
+                    ${items
+                      .map((doc) => {
+                        const linked = linkedDocIds.has(doc.id);
+                        return `
+                      <li
+                        class="workflow-doc-item${linked ? " is-linked" : ""}"
+                        data-doc-id="${escapeHtml(doc.id)}"
+                        data-doc-source="${escapeHtml(
+                          doc.source === "system"
+                            ? "system"
+                            : doc.source === "standard"
+                              ? "standard"
+                              : doc.source === "flow"
+                                ? "flow"
+                                : "warunkowy"
+                        )}"
+                        draggable="true"
+                        data-role="workflow-doc-item"
+                        title="Przeciągnij na zadanie, aby powiązać"
+                      >
+                        <div class="workflow-doc-main">
+                          <span class="workflow-doc-title">${escapeHtml(doc.title)}</span>
+                          ${
+                            doc.ruleHint
+                              ? `<span class="workflow-doc-hint">${escapeHtml(doc.ruleHint)}</span>`
+                              : ""
+                          }
+                        </div>
+                        <div class="workflow-doc-side">
+                          ${
+                            linked
+                              ? `<div class="workflow-doc-linked-actions">
+                                  <span class="workflow-doc-check" title="Powiązany" aria-label="Powiązany">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                                      <path d="M5 12.5 10 17.5 19 7.5" stroke-linecap="round" stroke-linejoin="round" />
+                                    </svg>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    class="workflow-doc-locate"
+                                    data-role="workflow-locate-task"
+                                    data-doc-id="${escapeHtml(doc.id)}"
+                                    title="Pokaż zadanie"
+                                    aria-label="Pokaż zadanie"
+                                  >
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                      <circle cx="12" cy="12" r="3.2" />
+                                      <path d="M12 3.5v2.8M12 17.7v2.8M3.5 12h2.8M17.7 12h2.8" stroke-linecap="round" />
+                                    </svg>
+                                  </button>
+                                </div>`
+                              : `<span class="workflow-doc-meta">${escapeHtml(
+                                  doc.source === "system"
+                                    ? "system"
+                                    : doc.source === "standard"
+                                      ? "standard"
+                                      : doc.source === "flow"
+                                        ? "flow"
+                                        : "warunkowy"
+                                )}</span>`
+                          }
+                        </div>
+                      </li>`;
+                      })
+                      .join("")}
+                  </ul>
+                </section>`;
+              })
+              .join("")}
+          </div>
+          ${workflowCreateUnassignedDocsButtonHtml(
+            docs.filter((doc) => !linkedDocIds.has(doc.id)).length
+          )}
+        </article>
+      </div>
+    </div>`;
 }
 
 function projectAttachmentsOverviewHtml(project) {
@@ -5006,7 +8578,11 @@ function docFormPanelHtml(project, doc) {
       ${documentTaskSplitHtml(project, "survey-doc", doc.id, {
         title: doc.title,
         eyebrow: "Dokument / zadanie",
-        showTitle: true,
+        showTitle: false,
+      })}
+
+      ${taskSubtreeManageHtml(project, resolveDocumentTask(project, "survey-doc", doc.id).id, {
+        returnTo: { panel: "doc-form", focusDocId: doc.id },
       })}
 
       <section class="doc-task-form-region" aria-label="Formularz dokumentu">
@@ -5578,7 +9154,11 @@ function buildingProjectFormHtml(project) {
       ${documentTaskSplitHtml(project, "building", "building-project", {
         title: "Projekt budowlany",
         eyebrow: "Dokument / zadanie",
-        showTitle: true,
+        showTitle: false,
+      })}
+
+      ${taskSubtreeManageHtml(project, resolveDocumentTask(project, "building", "building-project").id, {
+        returnTo: { panel: "building-form" },
       })}
 
       <section class="doc-task-form-region" aria-label="Formularz projektu budowlanego">
@@ -5799,12 +9379,536 @@ function buildingProjectFormHtml(project) {
     </div>`;
 }
 
+function collectTaskFamilyRows(tasks, focusTaskId) {
+  const focus = tasks.find((item) => String(item.id) === String(focusTaskId));
+  if (!focus) return { focus: null, rows: [], addParentId: null };
+
+  const byParent = new Map();
+  tasks.forEach((task) => {
+    const key = task.parentId ? String(task.parentId) : "";
+    if (!byParent.has(key)) byParent.set(key, []);
+    byParent.get(key).push(task);
+  });
+  byParent.forEach((list) => {
+    list.sort(
+      (a, b) =>
+        (a.sortOrder || 0) - (b.sortOrder || 0) ||
+        String(a.name || "").localeCompare(String(b.name || ""), "pl")
+    );
+  });
+
+  const rows = [];
+
+  // Najwyższa gałąź: rodzeństwo poziomu 1 + dzieci tylko aktywnego
+  if (!focus.parentId) {
+    const roots = byParent.get("") || [];
+    roots.forEach((task) => {
+      rows.push({
+        task,
+        depth: 0,
+        role: String(task.id) === String(focus.id) ? "current" : "sibling",
+      });
+      if (String(task.id) === String(focus.id)) {
+        (byParent.get(String(focus.id)) || []).forEach((child) => {
+          rows.push({ task: child, depth: 1, role: "child" });
+        });
+      }
+    });
+    return { focus, rows, addParentId: focus.id };
+  }
+
+  // Niższe poziomy: rodzic + rodzeństwo + dzieci tylko aktywnego
+  const parent = tasks.find((item) => String(item.id) === String(focus.parentId));
+  if (parent) {
+    rows.push({ task: parent, depth: 0, role: "parent" });
+  }
+  const siblings = byParent.get(String(focus.parentId)) || [];
+  siblings.forEach((task) => {
+    const isCurrent = String(task.id) === String(focus.id);
+    rows.push({
+      task,
+      depth: 1,
+      role: isCurrent ? "current" : "sibling",
+    });
+    if (isCurrent) {
+      (byParent.get(String(focus.id)) || []).forEach((child) => {
+        rows.push({ task: child, depth: 2, role: "child" });
+      });
+    }
+  });
+  return { focus, rows, addParentId: focus.id };
+}
+
+function taskSubtreeManageHtml(project, rootTaskId, { returnTo = null } = {}) {
+  const tasks = collectProjectTasks(project);
+  const { focus, rows, addParentId } = collectTaskFamilyRows(tasks, rootTaskId);
+  if (!focus) return "";
+
+  const returnAttrs = returnTo
+    ? ` data-return-panel="${escapeHtml(returnTo.panel || "")}" data-return-doc-id="${escapeHtml(
+        String(returnTo.focusDocId || "")
+      )}" data-return-task-id="${escapeHtml(String(returnTo.focusTaskId || focus.id))}"`
+    : "";
+
+  return `
+    <section class="doc-task-form-region task-subtree-region" aria-label="Zadania i podzadania">
+      <header class="doc-task-form-region-head">
+        <div>
+          <p class="eyebrow">Struktura</p>
+          <h3>Zadania i podzadania</h3>
+          <p class="muted">Rodzic, rodzeństwo i dzieci aktywnego — bez dzieci pozostałych.</p>
+        </div>
+        <button
+          type="button"
+          class="ghost-btn"
+          data-role="open-add-task"
+          data-project-id="${project.id}"
+          data-parent-task-id="${escapeHtml(String(addParentId || ""))}"
+          ${returnAttrs}
+        >
+          ${addParentId ? "Dodaj podzadanie" : "Dodaj zadanie poziomu 1"}
+        </button>
+      </header>
+      ${
+        rows.length
+          ? `<ul class="task-subtree-list">
+              ${rows
+                .map(({ task, depth, role }) => {
+                  const ownerName = ownerLabel(project, task.ownerId);
+                  const roleHint =
+                    role === "parent"
+                      ? "Rodzic"
+                      : role === "current"
+                        ? "Bieżące"
+                        : role === "sibling"
+                          ? "Rodzeństwo"
+                          : "Podzadanie";
+                  return `
+                <li class="task-subtree-item ${
+                  role === "current" ? "is-current" : ""
+                } ${role === "parent" ? "is-parent" : ""}" style="--sub-depth:${depth}" data-sub-depth="${depth}" data-task-depth="${
+                    task.depth || 0
+                  }">
+                  <button
+                    type="button"
+                    class="task-subtree-main"
+                    data-role="open-subtree-task"
+                    data-project-id="${project.id}"
+                    data-task-id="${escapeHtml(String(task.id))}"
+                    data-task-kind="${escapeHtml(task.kind || "")}"
+                    ${role === "current" ? "disabled aria-current=\"page\"" : ""}
+                  >
+                    <span class="task-subtree-copy">
+                      <strong>${escapeHtml(task.name)}</strong>
+                      <em>${escapeHtml(roleHint)} · ${escapeHtml(
+                    task.typeLabel || "Zadanie"
+                  )} · ${escapeHtml(ownerName)}</em>
+                    </span>
+                    <span class="task-subtree-status">${escapeHtml(task.status || "—")}</span>
+                  </button>
+                  <div class="task-subtree-actions">
+                    <select
+                      class="owner-select status-select task-subtree-status-select"
+                      data-role="task-status"
+                      data-task-id="${escapeHtml(String(task.id))}"
+                      data-project-id="${project.id}"
+                      aria-label="Status: ${escapeHtml(task.name)}"
+                    >
+                      ${taskStatusOptionsHtml(task.statusKey)}
+                    </select>
+                    <button
+                      type="button"
+                      class="tool-btn tool-btn-muted task-subtree-add"
+                      data-role="open-add-task"
+                      data-project-id="${project.id}"
+                      data-parent-task-id="${escapeHtml(String(task.id))}"
+                      title="Dodaj podzadanie"
+                      aria-label="Dodaj podzadanie do: ${escapeHtml(task.name)}"
+                      ${returnAttrs}
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">
+                        <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+                      </svg>
+                    </button>
+                  </div>
+                </li>`;
+                })
+                .join("")}
+            </ul>`
+          : `<p class="muted task-subtree-empty">Brak zadań w tej gałęzi.</p>`
+      }
+    </section>`;
+}
+
+function collectContextFlowTasks(tasks, focusTaskId) {
+  const byId = new Map(tasks.map((task) => [String(task.id), task]));
+  const focus = byId.get(String(focusTaskId));
+  if (!focus) return [];
+
+  const selected = new Map();
+  let cursor = focus;
+  while (cursor) {
+    selected.set(String(cursor.id), cursor);
+    cursor = cursor.parentId ? byId.get(String(cursor.parentId)) : null;
+  }
+
+  const siblingParentKey = focus.parentId ? String(focus.parentId) : "";
+  tasks.forEach((task) => {
+    const key = task.parentId ? String(task.parentId) : "";
+    if (key === siblingParentKey) selected.set(String(task.id), task);
+  });
+
+  return [...selected.values()];
+}
+
+function contextFlowColumnMap(nodes) {
+  const ids = new Set(nodes.map((task) => String(task.id)));
+  const memo = new Map();
+
+  const columnOf = (taskId, stack = new Set()) => {
+    const key = String(taskId);
+    if (memo.has(key)) return memo.get(key);
+    if (stack.has(key)) return 0;
+    stack.add(key);
+    const task = nodes.find((item) => String(item.id) === key);
+    const preds = (task?.dependsOn || []).map(String).filter((id) => ids.has(id));
+    const col = preds.length
+      ? Math.max(...preds.map((id) => columnOf(id, stack))) + 1
+      : 0;
+    memo.set(key, col);
+    stack.delete(key);
+    return col;
+  };
+
+  nodes.forEach((task) => columnOf(task.id));
+  return memo;
+}
+
+function contextFlowBarSpan(taskId, nodes, columns) {
+  const cols = [];
+  const walk = (id) => {
+    const key = String(id);
+    if (columns.has(key)) cols.push(columns.get(key));
+    nodes
+      .filter((item) => String(item.parentId || "") === key)
+      .forEach((child) => walk(child.id));
+  };
+  walk(taskId);
+  if (!cols.length) {
+    const fallback = columns.get(String(taskId)) || 0;
+    return { start: fallback + 1, span: 1, isSummary: false };
+  }
+  const min = Math.min(...cols);
+  const max = Math.max(...cols);
+  const hasVisibleChildren = nodes.some(
+    (item) => String(item.parentId || "") === String(taskId)
+  );
+  return {
+    start: min + 1,
+    span: Math.max(1, max - min + 1),
+    isSummary: hasVisibleChildren,
+  };
+}
+
+function contextFlowWidgetHtml(project, focusTaskId) {
+  const tasks = collectProjectTasks(project);
+  const nodes = collectContextFlowTasks(tasks, focusTaskId);
+  if (!nodes.length) {
+    return `<p class="muted">Brak zadań do pokazania w przepływie.</p>`;
+  }
+
+  const columns = contextFlowColumnMap(nodes);
+  const spans = new Map();
+  nodes.forEach((task) => {
+    spans.set(String(task.id), contextFlowBarSpan(task.id, nodes, columns));
+  });
+  const maxCol = Math.max(
+    0,
+    ...[...spans.values()].map((item) => item.start + item.span - 2)
+  );
+  const colCount = Math.max(1, maxCol + 1);
+  const hasDates = nodes.some((task) => task.startDate || task.dueDate);
+
+  const ordered = [...nodes].sort((a, b) => {
+    const sa = spans.get(String(a.id)) || { start: 1 };
+    const sb = spans.get(String(b.id)) || { start: 1 };
+    return (
+      (a.depth || 0) - (b.depth || 0) ||
+      sa.start - sb.start ||
+      String(a.name || "").localeCompare(String(b.name || ""), "pl")
+    );
+  });
+
+  const edges = [];
+  nodes.forEach((task) => {
+    (task.dependsOn || []).forEach((predId) => {
+      if (!columns.has(String(predId))) return;
+      if (!columns.has(String(task.id))) return;
+      // Nie łącz linią rodzica-summary z dzieckiem — pasek i tak obejmuje potomków
+      const predSpan = spans.get(String(predId));
+      if (predSpan?.isSummary && String(task.parentId || "") === String(predId)) return;
+      edges.push({ from: String(predId), to: String(task.id) });
+    });
+  });
+
+  return `
+    <div
+      class="ctx-flow ${hasDates ? "has-dates" : "no-dates"}"
+      data-role="context-flow"
+      data-project-id="${project.id}"
+      data-focus-task-id="${escapeHtml(String(focusTaskId))}"
+    >
+      <div class="ctx-gantt" data-role="context-flow-board" style="--ctx-cols:${colCount}">
+        <svg class="ctx-flow-links" data-role="context-flow-links" aria-hidden="true"></svg>
+        <div class="ctx-gantt-body">
+          ${ordered
+            .map((task) => {
+              const depth = task.depth || 0;
+              const spanInfo = spans.get(String(task.id)) || { start: 1, span: 1, isSummary: false };
+              const isCurrent = String(task.id) === String(focusTaskId);
+              const dateBits = [];
+              if (hasDates) {
+                if (task.startDate) dateBits.push(formatDateOnly(task.startDate));
+                if (task.dueDate) dateBits.push(formatDateOnly(task.dueDate));
+              }
+              return `
+              <div class="ctx-gantt-row${isCurrent ? " is-current" : ""}${
+                spanInfo.isSummary ? " is-summary" : ""
+              }" data-task-depth="${depth}">
+                <button
+                  type="button"
+                  class="ctx-gantt-label"
+                  data-role="open-context-flow-task"
+                  data-project-id="${project.id}"
+                  data-task-id="${escapeHtml(String(task.id))}"
+                  data-task-kind="${escapeHtml(task.kind || "")}"
+                  title="${escapeHtml(task.name)}"
+                >
+                  <strong>${escapeHtml(task.name)}</strong>
+                  <em>${escapeHtml(task.typeLabel || "Zadanie")}</em>
+                </button>
+                <div class="ctx-gantt-track">
+                  <button
+                    type="button"
+                    class="ctx-gantt-bar${spanInfo.isSummary ? " is-summary" : ""}"
+                    data-role="open-context-flow-task"
+                    data-project-id="${project.id}"
+                    data-task-id="${escapeHtml(String(task.id))}"
+                    data-task-kind="${escapeHtml(task.kind || "")}"
+                    data-task-depth="${depth}"
+                    data-flow-id="${escapeHtml(String(task.id))}"
+                    style="grid-column: ${spanInfo.start} / span ${spanInfo.span}"
+                    title="${escapeHtml(task.name)}"
+                  >
+                    <span>${
+                      dateBits.length
+                        ? escapeHtml(dateBits.join(" – "))
+                        : escapeHtml(task.name)
+                    }</span>
+                  </button>
+                </div>
+              </div>`;
+            })
+            .join("")}
+        </div>
+      </div>
+      <script type="application/json" data-role="context-flow-edges">${escapeHtml(
+        JSON.stringify(edges)
+      )}</script>
+    </div>`;
+}
+
+function paintContextFlowLinks(root) {
+  const board = root?.querySelector('[data-role="context-flow-board"]');
+  const svg = root?.querySelector('[data-role="context-flow-links"]');
+  const edgesEl = root?.querySelector('[data-role="context-flow-edges"]');
+  if (!board || !svg || !edgesEl) return;
+
+  let edges = [];
+  try {
+    edges = JSON.parse(edgesEl.textContent || "[]");
+  } catch {
+    edges = [];
+  }
+
+  const boardRect = board.getBoundingClientRect();
+  const w = board.scrollWidth;
+  const h = board.scrollHeight;
+  svg.setAttribute("width", String(w));
+  svg.setAttribute("height", String(h));
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.innerHTML = "";
+
+  const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+  const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+  marker.setAttribute("id", `ctx-arrow-${root.dataset.focusTaskId || "x"}`);
+  marker.setAttribute("viewBox", "0 0 10 10");
+  marker.setAttribute("refX", "9");
+  marker.setAttribute("refY", "5");
+  marker.setAttribute("markerWidth", "6");
+  marker.setAttribute("markerHeight", "6");
+  marker.setAttribute("orient", "auto-start-reverse");
+  const tip = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  tip.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+  tip.setAttribute("class", "ctx-flow-arrow");
+  marker.appendChild(tip);
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+  const markerUrl = `url(#ctx-arrow-${root.dataset.focusTaskId || "x"})`;
+
+  edges.forEach((edge) => {
+    const fromEl = board.querySelector(`[data-flow-id="${CSS.escape(edge.from)}"]`);
+    const toEl = board.querySelector(`[data-flow-id="${CSS.escape(edge.to)}"]`);
+    if (!fromEl || !toEl) return;
+    const from = fromEl.getBoundingClientRect();
+    const to = toEl.getBoundingClientRect();
+    const x1 = from.right - boardRect.left + board.scrollLeft;
+    const y1 = from.top + from.height / 2 - boardRect.top + board.scrollTop;
+    const x2 = to.left - boardRect.left + board.scrollLeft;
+    const y2 = to.top + to.height / 2 - boardRect.top + board.scrollTop;
+    const midX = x1 + Math.max(18, (x2 - x1) * 0.5);
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute(
+      "d",
+      `M ${x1} ${y1} H ${midX} V ${y2} H ${x2}`
+    );
+    path.setAttribute("class", "ctx-flow-link");
+    path.setAttribute("marker-end", markerUrl);
+    svg.appendChild(path);
+  });
+}
+
+function bindContextFlowWidget(root = content) {
+  root.querySelectorAll('[data-role="context-flow"]').forEach((widget) => {
+    const draw = () => paintContextFlowLinks(widget);
+    draw();
+    requestAnimationFrame(draw);
+    if (!widget._ctxFlowBound) {
+      widget._ctxFlowBound = true;
+      window.addEventListener("resize", draw);
+    }
+    widget.querySelectorAll('[data-role="open-context-flow-task"]').forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openProjectTaskById(
+          btn.dataset.projectId,
+          btn.dataset.taskId,
+          btn.dataset.taskKind
+        );
+      });
+    });
+  });
+}
+
+function processTaskDetailHtml(project, taskId) {
+  const tasks = collectProjectTasks(project);
+  const task = tasks.find((item) => String(item.id) === String(taskId));
+  if (!task) {
+    return `
+      <div class="panel">
+        <p>Nie znaleziono zadania.</p>
+        <button type="button" class="ghost-btn" data-role="close-task-detail" data-project-id="${project.id}">
+          Wróć do projektu
+        </button>
+      </div>`;
+  }
+
+  const branchDocs = [];
+  const seen = new Set();
+  const pushDoc = (linked) => {
+    if (!linked?.kind || !linked?.id) return;
+    const key = `${linked.kind}:${linked.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    branchDocs.push(linked);
+  };
+  pushDoc(task.linkedDoc);
+  tasks
+    .filter((item) => item.parentId && String(item.parentId) === String(task.parentId || task.id))
+    .forEach((item) => pushDoc(item.linkedDoc));
+  if (task.hasChildren) {
+    tasks
+      .filter((item) => String(item.parentId) === String(task.id))
+      .forEach((item) => pushDoc(item.linkedDoc));
+  }
+
+  const kindLabel =
+    typeof typeLabelForProcessKind === "function"
+      ? typeLabelForProcessKind(task.kind)
+      : task.typeLabel || "Zadanie";
+
+  return `
+    <div class="doc-task-view process-task-view" data-project-id="${project.id}" data-task-id="${escapeHtml(
+      String(task.id)
+    )}">
+      <div class="doc-task-toolbar">
+        <button type="button" class="ghost-btn" data-role="close-task-detail" data-project-id="${project.id}">
+          Wróć do projektu
+        </button>
+        <p class="doc-task-toolbar-meta muted">${escapeHtml(kindLabel)} · bez formularza dokumentu</p>
+      </div>
+
+      ${documentTaskSplitHtml(project, "task", task.id, {
+        title: task.name,
+        eyebrow: kindLabel,
+        showTitle: false,
+      })}
+
+      <div class="task-side-panels">
+      ${taskSubtreeManageHtml(project, task.id, {
+        returnTo: { panel: "task-detail", focusTaskId: task.id },
+      })}
+
+      <section class="doc-task-form-region task-context-region" aria-label="Dokumenty i zależności">
+        <header class="doc-task-form-region-head">
+          <div>
+            <p class="eyebrow">Kontekst</p>
+            <h3>Przepływ zależności</h3>
+            <p class="muted">Układ jak Gantt: paski od lewej do prawej, linie pokazują kolejność.</p>
+          </div>
+        </header>
+        ${contextFlowWidgetHtml(project, task.id)}
+        ${
+          branchDocs.length
+            ? `<div class="task-context-docs">
+                <p class="doc-task-meta-label">Dokumenty w gałęzi</p>
+                <ul class="task-branch-docs">
+                ${branchDocs
+                  .map(
+                    (doc) => `
+                  <li>
+                    <button
+                      type="button"
+                      class="ghost-btn"
+                      data-role="open-linked-doc"
+                      data-project-id="${project.id}"
+                      data-link-kind="${escapeHtml(doc.kind)}"
+                      data-link-id="${escapeHtml(String(doc.id))}"
+                    >
+                      ${escapeHtml(resolveLinkedDocLabel(project, doc) || doc.name || "Dokument")}
+                    </button>
+                  </li>`
+                  )
+                  .join("")}
+                </ul>
+              </div>`
+            : ""
+        }
+      </section>
+      </div>
+    </div>`;
+}
+
 function projectDetailHtml(project, panel = "overview", options = {}) {
   const filesCount = project.files?.length || 0;
   const isForm = panel === "building-form";
   const isSurvey = panel === "formal-survey";
   const isDocForm = panel === "doc-form";
   const isKpa = panel === "kpa";
+  const isTaskDetail = panel === "task-detail";
+  const entityTitle = resolveProjectDetailEntityTitle(project, panel, options);
+  const showEntityAsHero = Boolean(entityTitle) && (isTaskDetail || isDocForm || isForm);
 
   let mainHtml = projectOverviewHtml(project, options);
   if (isForm) mainHtml = buildingProjectFormHtml(project);
@@ -5812,50 +9916,91 @@ function projectDetailHtml(project, panel = "overview", options = {}) {
     mainHtml = formalSurveyPanelHtml(project, surveyDraft.answers, surveyDraft.step);
   }
   if (isDocForm) {
-    const doc = (project.formalSurvey?.documents || []).find(
-      (item) => String(item.id) === String(options.focusDocId)
-    );
-    mainHtml = docFormPanelHtml(project, doc);
+    const doc =
+      (project.formalSurvey?.documents || []).find(
+        (item) => String(item.id) === String(options.focusDocId)
+      ) ||
+      (project.flowDocuments || []).find(
+        (item) => String(item.id) === String(options.focusDocId)
+      ) ||
+      (String(options.focusDocId) === "building-project"
+        ? {
+            id: "building-project",
+            title: "Projekt budowlany",
+            source: "system",
+          }
+        : null);
+    mainHtml = doc
+      ? docFormPanelHtml(project, doc)
+      : `<section class="panel"><p>Nie znaleziono dokumentu.</p></section>`;
   }
   if (isKpa) mainHtml = projectKpaPanelHtml(project);
+  if (isTaskDetail) mainHtml = processTaskDetailHtml(project, options.focusTaskId);
 
-  const fullWidth = isSurvey || isDocForm || isKpa || isForm;
+  const fullWidth = isSurvey || isDocForm || isKpa || isForm || isTaskDetail;
+  const heroTitle = showEntityAsHero ? entityTitle : project.title;
+  const heroEyebrow = isSurvey
+    ? "Ankieta w projekcie"
+    : isForm
+      ? "Formularz w projekcie"
+      : isDocForm
+        ? "Dokument"
+        : isTaskDetail
+          ? "Zadanie"
+          : isKpa
+            ? "Analityka projektu"
+            : "Projekt";
+  const heroLede = showEntityAsHero
+    ? `Projekt: ${escapeHtml(project.title)}${
+        project.code ? ` · <span class="project-code">${escapeHtml(project.code)}</span>` : ""
+      }`
+    : `${formatDate(project.createdAt)}${
+        project.code ? ` · <span class="project-code">${escapeHtml(project.code)}</span>` : ""
+      } · ${filesCount} załączników${
+        isForm
+          ? " · Projekt budowlany"
+          : isSurvey
+            ? " · Ankieta formalna"
+            : isDocForm
+              ? " · Dokument"
+              : isTaskDetail
+                ? " · Zadanie"
+                : isKpa
+                  ? " · KPA"
+                  : ""
+      }`;
 
   return `
-    <section class="project-detail">
+    <section class="project-detail" data-project-id="${project.id}" data-panel="${escapeHtml(
+      panel
+    )}">
       <header class="form-intro form-intro-row">
         <div class="form-intro-copy">
-          <p class="eyebrow">${
-            isSurvey
-              ? "Ankieta w projekcie"
-              : isForm
-                ? "Formularz w projekcie"
-                : isDocForm
-                  ? "Dokument w projekcie"
-                  : isKpa
-                    ? "Analityka projektu"
-                    : "Projekt"
-          }</p>
-          <h1>${escapeHtml(project.title)}</h1>
-          <p class="lede form-lede">${formatDate(project.createdAt)}${
-            project.code ? ` · <span class="project-code">${escapeHtml(project.code)}</span>` : ""
-          } · ${filesCount} załączników${
-    isForm
-      ? " · Projekt budowlany"
-      : isSurvey
-        ? " · Ankieta formalna"
-        : isDocForm
-          ? " · Dokument"
-          : isKpa
-            ? " · KPA"
-            : ""
-  }</p>
+          <p class="eyebrow">${heroEyebrow}</p>
+          <h1>${escapeHtml(heroTitle)}</h1>
+          <p class="lede form-lede">${heroLede}</p>
         </div>
         <div class="detail-actions">
           ${
-            isForm || isSurvey || isDocForm || isKpa
+            isForm || isSurvey || isDocForm || isKpa || isTaskDetail
               ? ""
-              : `<button class="primary-btn" type="button" data-role="edit-project" data-project-id="${project.id}">Edytuj</button>`
+              : `<button
+                   type="button"
+                   class="ghost-btn detail-auto-schedule-btn${
+                     isProjectAutoScheduleEnabled(project) ? " is-on" : ""
+                   }"
+                   data-role="toggle-auto-schedule"
+                   data-project-id="${escapeHtml(project.id)}"
+                   aria-pressed="${isProjectAutoScheduleEnabled(project) ? "true" : "false"}"
+                   title="Automatyczne wyliczanie dat z zależności i podzadań"
+                 >
+                   <span class="detail-auto-schedule-label">Daty auto</span>
+                   <span class="detail-auto-schedule-state">${
+                     isProjectAutoScheduleEnabled(project) ? "ON" : "OFF"
+                   }</span>
+                 </button>
+                 <button class="primary-btn" type="button" data-role="edit-project" data-project-id="${project.id}">Edytuj</button>
+                 <button class="ghost-btn detail-delete-btn" type="button" data-role="delete-project" data-project-id="${project.id}">Usuń projekt</button>`
           }
         </div>
       </header>
@@ -6345,10 +10490,35 @@ function startGenerateProject(projectId) {
 function bindProjectDetailActions(projectId) {
   content.querySelectorAll('[data-role="open-building-form"]').forEach((btn) => {
     btn.addEventListener("click", () => {
-      renderView("project-detail", {
-        projectId: btn.dataset.projectId || projectId,
+      navigateProjectPanel(btn.dataset.projectId || projectId, {
         panel: "building-form",
       });
+    });
+  });
+
+  content.querySelectorAll('[data-role="delete-project"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      confirmAndDeleteProject(btn.dataset.projectId || projectId);
+    });
+  });
+
+  content.querySelectorAll('[data-role="toggle-auto-schedule"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const id = btn.dataset.projectId || projectId;
+      const project = getProjectById(id);
+      if (!project) return;
+      const nextOn = !isProjectAutoScheduleEnabled(project);
+      setProjectAutoScheduleDates(id, nextOn);
+      showTypeToast(
+        nextOn
+          ? "Daty auto: ON — przeliczanie (pełny silnik wkrótce)"
+          : "Daty auto: OFF — daty ustawiasz ręcznie (np. na Gancie)"
+      );
+      renderView("project-detail", projectOverviewNav(id));
     });
   });
 
@@ -6360,14 +10530,14 @@ function bindProjectDetailActions(projectId) {
       const tab =
         raw === "attachments" ? "attachments" : raw === "geoportal" ? "geoportal" : "tasks";
       setProjectListTab(tab);
-      renderView("project-detail", projectOverviewNav(btn.dataset.projectId || projectId, { listTab: tab }));
+      navigateProjectPanel(btn.dataset.projectId || projectId, { listTab: tab });
     });
   });
 
   content.querySelectorAll('[data-role="close-building-form"]').forEach((btn) => {
     btn.addEventListener("click", () => {
       setProjectListTab("tasks");
-      renderView("project-detail", projectOverviewNav(btn.dataset.projectId || projectId, { listTab: "tasks" }));
+      navigateProjectPanel(btn.dataset.projectId || projectId, { listTab: "tasks" });
     });
   });
 
@@ -6376,8 +10546,7 @@ function bindProjectDetailActions(projectId) {
       event.preventDefault();
       event.stopPropagation();
       setProjectListTab("tasks");
-      renderView("project-detail", {
-        projectId: btn.dataset.projectId || projectId,
+      navigateProjectPanel(btn.dataset.projectId || projectId, {
         panel: "formal-survey",
       });
     });
@@ -6405,6 +10574,30 @@ function bindProjectDetailActions(projectId) {
     });
   });
 
+  content.querySelectorAll('[data-role="tasks-cards"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      switchTasksView("cards", btn.dataset.projectId);
+    });
+  });
+
+  content.querySelectorAll('[data-role="tasks-flow"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      switchTasksView("flow", btn.dataset.projectId);
+    });
+  });
+
+  content.querySelectorAll('[data-role="project-flow-pick"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openProjectFlowGenerateModal(btn.dataset.projectId || projectId);
+    });
+  });
+
   content.querySelectorAll('[data-role="tasks-gantt"]').forEach((btn) => {
     btn.addEventListener("click", (event) => {
       event.preventDefault();
@@ -6425,7 +10618,44 @@ function bindProjectDetailActions(projectId) {
     btn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      openAddTaskModal(btn.dataset.projectId || projectId);
+      const parentTaskId = btn.dataset.parentTaskId || "";
+      const returnPanel = btn.dataset.returnPanel || "";
+      let returnTo = null;
+      if (returnPanel === "task-detail") {
+        returnTo = {
+          panel: "task-detail",
+          focusTaskId: btn.dataset.returnTaskId || parentTaskId,
+        };
+      } else if (returnPanel === "doc-form") {
+        returnTo = { panel: "doc-form", focusDocId: btn.dataset.returnDocId || "" };
+      } else if (returnPanel === "building-form") {
+        returnTo = { panel: "building-form" };
+      } else if (parentTaskId) {
+        returnTo = { panel: "task-detail", focusTaskId: parentTaskId };
+      }
+      openAddTaskModal(btn.dataset.projectId || projectId, {
+        parentTaskId,
+        returnTo,
+      });
+    });
+  });
+
+  content.querySelectorAll('[data-role="open-subtree-task"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openProjectTaskById(
+        btn.dataset.projectId || projectId,
+        btn.dataset.taskId,
+        btn.dataset.taskKind
+      );
+    });
+  });
+
+  content.querySelectorAll('[data-role="close-task-detail"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setProjectListTab("tasks");
+      navigateProjectPanel(btn.dataset.projectId || projectId, { listTab: "tasks" });
     });
   });
 
@@ -6433,8 +10663,7 @@ function bindProjectDetailActions(projectId) {
     btn.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      renderView("project-detail", {
-        projectId: btn.dataset.projectId || projectId,
+      navigateProjectPanel(btn.dataset.projectId || projectId, {
         panel: "kpa",
       });
     });
@@ -6472,13 +10701,22 @@ function bindProjectDetailActions(projectId) {
       event.stopPropagation();
       const kind = btn.dataset.linkKind;
       const linkId = btn.dataset.linkId;
+      const parentFromTask =
+        kind === "task" || kind === "process" || kind === "step" || kind === "milestone"
+          ? linkId
+          : "";
       openAddTaskModal(btn.dataset.projectId || projectId, {
-        linkedKind: kind,
-        linkedId: linkId,
+        linkedKind: parentFromTask ? "" : kind,
+        linkedId: parentFromTask ? "" : linkId,
+        parentTaskId: parentFromTask || "",
         returnTo:
           kind === "building"
             ? { panel: "building-form" }
-            : { panel: "doc-form", focusDocId: linkId },
+            : kind === "survey-doc"
+              ? { panel: "doc-form", focusDocId: linkId }
+              : parentFromTask
+                ? { panel: "task-detail", focusTaskId: parentFromTask }
+                : null,
       });
     });
   });
@@ -6518,35 +10756,17 @@ function bindProjectDetailActions(projectId) {
   content.querySelectorAll('[data-role="close-doc-form"]').forEach((btn) => {
     btn.addEventListener("click", () => {
       setProjectListTab("tasks");
-      renderView("project-detail", projectOverviewNav(btn.dataset.projectId || projectId, { listTab: "tasks" }));
+      navigateProjectPanel(btn.dataset.projectId || projectId, { listTab: "tasks" });
     });
   });
 
   content.querySelectorAll('[data-role="open-task"]').forEach((row) => {
     const openTask = () => {
-      const kind = row.dataset.taskKind;
-      const id = row.dataset.projectId || projectId;
-      if (kind === "building") {
-        renderView("project-detail", { projectId: id, panel: "building-form" });
-        return;
-      }
-      if (kind === "survey-doc") {
-        renderView("project-detail", {
-          projectId: id,
-          panel: "doc-form",
-          focusDocId: row.dataset.taskId,
-        });
-        return;
-      }
-      if (kind === "custom") {
-        const project = getProjectById(id);
-        const task = (project?.customTasks || []).find(
-          (item) => String(item.id) === String(row.dataset.taskId)
-        );
-        if (task?.linkedDoc) {
-          openLinkedDocument(id, task.linkedDoc.kind, task.linkedDoc.id);
-        }
-      }
+      openProjectTaskById(
+        row.dataset.projectId || projectId,
+        row.dataset.taskId,
+        row.dataset.taskKind
+      );
     };
     row.addEventListener("click", (event) => {
       if (
@@ -6561,12 +10781,33 @@ function bindProjectDetailActions(projectId) {
         event.target.closest('[data-role="filter-task-search"]') ||
         event.target.closest('[data-role="task-select"]') ||
         event.target.closest('[data-role="open-linked-doc"]') ||
+        event.target.closest('[data-role="toggle-task-expand"]') ||
+        event.target.closest('[data-role="tasks-card-drag-handle"]') ||
+        event.target.closest('[data-role="workflow-set-blocks"]') ||
+        event.target.closest('[data-role="workflow-remove-dep"]') ||
+        event.target.closest('[data-role="workflow-task-doc"]') ||
+        event.target.closest('[data-role="workflow-duration"]') ||
+        event.target.closest('[data-role="workflow-add-child"]') ||
+        event.target.closest('[data-role="delete-project-task"]') ||
+        event.target.closest('[data-role="tasks-cards-add-root"]') ||
+        event.target.closest('[data-role="tasks-table-add-root"]') ||
         event.target.closest(".col-select")
       ) {
         return;
       }
       event.preventDefault();
       openTask();
+    });
+    row.querySelectorAll('[data-role="open-task-title"]').forEach((titleBtn) => {
+      titleBtn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openProjectTaskById(
+          titleBtn.dataset.projectId || row.dataset.projectId || projectId,
+          titleBtn.dataset.taskId || row.dataset.taskId,
+          titleBtn.dataset.taskKind || row.dataset.taskKind
+        );
+      });
     });
     row.addEventListener("keydown", (event) => {
       if (
@@ -6576,7 +10817,8 @@ function bindProjectDetailActions(projectId) {
         event.target.closest('[data-role="open-task-due"]') ||
         event.target.closest('[data-role="task-start"]') ||
         event.target.closest('[data-role="open-task-start"]') ||
-        event.target.closest('[data-role="task-select"]')
+        event.target.closest('[data-role="task-select"]') ||
+        event.target.closest('[data-role="toggle-task-expand"]')
       ) {
         return;
       }
@@ -6646,14 +10888,11 @@ function bindProjectDetailActions(projectId) {
       const taskId = select.dataset.taskId;
       const statusId = select.value;
       if (!taskId || !statusId) return;
-      if (!persistTaskBoardStatus(id, taskId, statusId)) return;
+      const saved = persistTaskBoardStatus(id, taskId, statusId);
+      if (!saved) return;
+      syncTaskStatusDom(id, saved.taskIds, statusId);
       const meta = boardStatusMeta(statusId);
-      const row = select.closest("tr");
-      if (row) {
-        row.dataset.filterStatusKey = statusId;
-        row.dataset.filterStatus = String(meta.label || "").toLowerCase();
-      }
-      showTypeToast(`Status: ${meta.label}`);
+      showFormSavedToast(`Zmieniono status: ${meta.label}`);
     });
   });
 
@@ -6712,16 +10951,82 @@ function bindProjectDetailActions(projectId) {
         const id = input.dataset.projectId || projectId;
         const project = getProjectById(id);
         if (!project || !taskId) return;
-        persistProject({
+        if (storageKey === "taskStartDates") {
+          const autoOn = isProjectAutoScheduleEnabled(project);
+          const flowTask = (project.flowInstance?.tasks || []).find(
+            (item) => item.id === taskId
+          );
+          if (autoOn && flowTask && (flowTask.blockedBy || []).length) {
+            input.value = "";
+            showTypeToast("Start tego zadania wynika z wymaganych poprzedników");
+            return;
+          }
+          if (autoOn && flowTask) {
+            const startDate =
+              typeof input.value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(input.value)
+                ? input.value
+                : null;
+            if (flowTask.parentId) {
+              showTypeToast("Datę startu ustawiasz na zadaniu najwyższego poziomu");
+              input.value = getTaskStartDate(project, taskId) || "";
+              syncEmptyState();
+              return;
+            }
+            let nextProject = {
+              ...project,
+              flowInstance: {
+                ...project.flowInstance,
+                tasks: (project.flowInstance.tasks || []).map((item) =>
+                  item.id === taskId ? { ...item, startDate } : item
+                ),
+                updatedAt: new Date().toISOString(),
+              },
+              updatedAt: new Date().toISOString(),
+            };
+            nextProject = applyFlowScheduleDatesToProject(nextProject);
+            persistProject(nextProject);
+            showTypeToast(
+              input.value
+                ? `Daty z flow przeniesione do tabeli (start: ${formatDateOnly(input.value)})`
+                : clearLabel
+            );
+            renderView(
+              "project-detail",
+              projectOverviewNav(id, { listTab: "tasks" })
+            );
+            return;
+          }
+        }
+        if (storageKey === "taskDueDates" && isProjectAutoScheduleEnabled(project)) {
+          const collected = collectProjectTasks(project);
+          const currentTask = collected.find((item) => String(item.id) === String(taskId));
+          if (currentTask?.dueDateLocked) {
+            input.value = currentTask.dueDate || "";
+            syncEmptyState();
+            showTypeToast("Data zakończenia nadrzędnego wynika z ostatniego podzadania");
+            return;
+          }
+        }
+        let nextProject = {
           ...project,
           [storageKey]: {
             ...(project[storageKey] || {}),
             [taskId]: input.value || "",
           },
           updatedAt: new Date().toISOString(),
-        });
+        };
+        if (storageKey === "taskDueDates") {
+          nextProject = recomputeProjectParentDueDates(nextProject);
+        }
+        persistProject(nextProject);
         syncEmptyState();
         showTypeToast(input.value ? `${setLabel}: ${formatDateOnly(input.value)}` : clearLabel);
+        if (panel?.dataset.viewMode === "cards" || storageKey === "taskDueDates") {
+          renderView(
+            "project-detail",
+            projectOverviewNav(id, { listTab: "tasks" })
+          );
+        }
       });
     });
 
@@ -6767,6 +11072,8 @@ function bindProjectDetailActions(projectId) {
 
   bindTaskSelection(projectId);
   bindTaskTableFilters();
+  bindTasksCardsView(projectId);
+  bindProjectTasksSharedControls(projectId);
   bindKanbanBoard(projectId);
   bindGanttBoard(projectId);
 
@@ -6877,6 +11184,485 @@ function syncTaskBulkUi(panel) {
   });
 }
 
+function bindTasksCardsView(projectId) {
+  const panel = content.querySelector('[data-role="project-tasks-panel"]');
+  const root = panel?.querySelector('[data-role="tasks-cards-view"]');
+  if (!panel || !root || panel.dataset.viewMode !== "cards") return;
+
+  setWorkflowRuntime({ mode: "project", projectId: root.dataset.projectId || projectId });
+
+  const list = root.querySelector('[data-role="workflow-task-list"]');
+  const searchInput = root.querySelector('[data-role="filter-task-search"]');
+  const countEl = root.querySelector('[data-role="task-filter-count"]');
+  const items = () =>
+    Array.from(root.querySelectorAll('.tasks-card-item[data-role="open-task"]'));
+
+  const applyFilter = () => {
+    const searchWords = String(searchInput?.value || "")
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
+    let visible = 0;
+    let totalShownTree = 0;
+    items().forEach((item) => {
+      const treeHidden = item.classList.contains("is-collapsed-hidden");
+      const searchBlob = item.dataset.filterSearch || "";
+      const searchMatch = searchWords.every((word) => searchBlob.includes(word));
+      const match = searchMatch && !treeHidden;
+      item.hidden = !match;
+      if (!treeHidden) totalShownTree += 1;
+      if (match) visible += 1;
+    });
+    if (countEl) {
+      countEl.textContent =
+        !searchWords.length || visible === totalShownTree
+          ? `${visible} zadań`
+          : `${visible} z ${totalShownTree} zadań`;
+    }
+    requestAnimationFrame(() => drawWorkflowDependencyLinks());
+  };
+
+  panel._applyTaskFilters = applyFilter;
+  searchInput?.addEventListener("input", applyFilter);
+  searchInput?.addEventListener("click", (event) => event.stopPropagation());
+
+  const afterExpand = () => {
+    syncTaskTreeDom(panel);
+    requestAnimationFrame(() => {
+      drawWorkflowDependencyLinks();
+      requestAnimationFrame(() => drawWorkflowDependencyLinks());
+    });
+  };
+
+  root.querySelectorAll('[data-role="toggle-task-expand"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const pid = btn.dataset.projectId || projectId;
+      const tid = btn.dataset.taskId;
+      if (!pid || !tid) return;
+      toggleTaskExpandState(pid, tid);
+      afterExpand();
+    });
+  });
+
+  root.querySelector('[data-role="tasks-expand-all"]')?.addEventListener("click", () => {
+    const pid = root.dataset.projectId || projectId;
+    const project = getProjectById(pid);
+    if (!project) return;
+    setAllTaskExpandState(pid, collectProjectTasks(project), true);
+    afterExpand();
+  });
+
+  root.querySelector('[data-role="tasks-collapse-roots"]')?.addEventListener("click", () => {
+    const pid = root.dataset.projectId || projectId;
+    const project = getProjectById(pid);
+    if (!project) return;
+    collapseTasksToRootLevel(pid, collectProjectTasks(project));
+    afterExpand();
+  });
+
+  root.querySelectorAll('[data-role="workflow-set-blocks"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const taskId = btn.dataset.taskId;
+      const active = getActiveWorkflowPath();
+      const task = active?.tasks?.find((item) => item.id === taskId);
+      if (!task) return;
+      openWorkflowTaskPickerModal({
+        title: "Wymaga wykonania",
+        lead: `Wybierz zadania, które muszą być wykonane, zanim ruszy „${task.name}”.`,
+        taskId,
+        selectedIds: task.blockedBy || [],
+        onSave: (ids) => {
+          setWorkflowTaskDependencies(taskId, ids, "blockedBy");
+          showTypeToast("Zapisano powiązania (instancja projektu)");
+          renderView(
+            "project-detail",
+            projectOverviewNav(root.dataset.projectId || projectId, { listTab: "tasks" })
+          );
+        },
+      });
+    });
+  });
+
+  root.querySelectorAll('[data-role="workflow-remove-dep"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      removeWorkflowDependency(btn.dataset.from, btn.dataset.to);
+      showTypeToast("Usunięto powiązanie");
+      renderView(
+        "project-detail",
+        projectOverviewNav(root.dataset.projectId || projectId, { listTab: "tasks" })
+      );
+    });
+  });
+
+  const refreshCardsView = () => {
+    renderView(
+      "project-detail",
+      projectOverviewNav(root.dataset.projectId || projectId, { listTab: "tasks" })
+    );
+  };
+
+  root.querySelectorAll('[data-role="workflow-duration"]').forEach((input) => {
+    const commit = () => {
+      const taskId = input.dataset.taskId;
+      if (!taskId) return;
+      setWorkflowTaskDuration(taskId, input.value);
+      refreshCardsView();
+    };
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("change", commit);
+  });
+
+  applyFilter();
+  bindWorkflowUnassignedDocsAction();
+  bindWorkflowDependencyRedraw();
+  requestAnimationFrame(() => drawWorkflowDependencyLinks());
+  applyWorkflowTaskHighlight();
+
+  if (!list) return;
+
+  const clearDropMarkers = () => {
+    list.querySelectorAll(".tasks-card-item").forEach((item) => {
+      item.classList.remove(
+        "drop-before",
+        "drop-after",
+        "drop-nest",
+        "drop-link-doc",
+        "drop-link-blocked"
+      );
+    });
+  };
+
+  let dragTaskId = null;
+  list.querySelectorAll(".tasks-card-item").forEach((item) => {
+    item.addEventListener("dragstart", (event) => {
+      if (event.target.closest('[data-role="workflow-task-doc"]')) return;
+      const interactive = event.target.closest(
+        "button, a, input, textarea, select, label, .due-date-field"
+      );
+      if (
+        interactive &&
+        !interactive.matches('[data-role="tasks-card-drag-handle"]')
+      ) {
+        event.preventDefault();
+        return;
+      }
+      dragTaskId = item.dataset.taskId || null;
+      if (!dragTaskId) {
+        event.preventDefault();
+        return;
+      }
+      item.classList.add("is-dragging");
+      list.classList.add("is-dragging-tasks");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", dragTaskId);
+    });
+
+    item.addEventListener("dragend", () => {
+      dragTaskId = null;
+      item.classList.remove("is-dragging");
+      list.classList.remove("is-dragging-tasks");
+      clearDropMarkers();
+      requestAnimationFrame(() => drawWorkflowDependencyLinks());
+    });
+
+    item.addEventListener("dragover", (event) => {
+      if (workflowDocDragState && !list.classList.contains("is-dragging-tasks")) {
+        event.preventDefault();
+        clearDropMarkers();
+        const targetId = item.dataset.taskId;
+        const docId = workflowDocDragState.docId;
+        if (workflowDocDragState.sourceTaskId && workflowDocDragState.sourceTaskId === targetId) {
+          event.dataTransfer.dropEffect = "none";
+          return;
+        }
+        if (!canAssignWorkflowDocToTask(targetId, docId)) {
+          item.classList.add("drop-link-blocked");
+          event.dataTransfer.dropEffect = "none";
+          return;
+        }
+        item.classList.add("drop-link-doc");
+        event.dataTransfer.dropEffect = workflowDocDragState.sourceTaskId ? "move" : "copy";
+        return;
+      }
+
+      if (!dragTaskId || dragTaskId === item.dataset.taskId) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      const project = getProjectById(root.dataset.projectId || projectId);
+      const allTasks = [
+        ...(project?.flowInstance?.tasks || []),
+        ...(project?.customTasks || []),
+      ];
+      if (isWorkflowDescendant(allTasks, dragTaskId, item.dataset.taskId)) {
+        clearDropMarkers();
+        return;
+      }
+      const card = item.querySelector(".tasks-card-tile");
+      const rect = (card || item).getBoundingClientRect();
+      const ratio = (event.clientY - rect.top) / Math.max(1, rect.height);
+      clearDropMarkers();
+      if (ratio < 0.28) item.classList.add("drop-before");
+      else if (ratio > 0.72) item.classList.add("drop-after");
+      else item.classList.add("drop-nest");
+    });
+
+    item.addEventListener("dragleave", (event) => {
+      if (!item.contains(event.relatedTarget)) {
+        item.classList.remove(
+          "drop-before",
+          "drop-after",
+          "drop-nest",
+          "drop-link-doc",
+          "drop-link-blocked"
+        );
+      }
+    });
+
+    item.addEventListener("drop", (event) => {
+      if (event.target.closest('[data-role="workflow-task-doc"]')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const docId =
+        event.dataTransfer.getData("text/workflow-doc") || workflowDocDragState?.docId || "";
+      const sourceTaskId =
+        event.dataTransfer.getData("text/workflow-doc-source-task") ||
+        workflowDocDragState?.sourceTaskId ||
+        "";
+      const targetId = item.dataset.taskId;
+
+      if (docId && targetId) {
+        clearDropMarkers();
+        if (sourceTaskId && sourceTaskId === targetId) return;
+        if (!canAssignWorkflowDocToTask(targetId, docId)) {
+          showTypeToast("To zadanie ma już powiązany dokument");
+          return;
+        }
+        linkWorkflowTaskDocument(targetId, docId);
+        workflowDocDragState = null;
+        showTypeToast(
+          sourceTaskId ? "Przepięto dokument na inne zadanie" : "Powiązano dokument z zadaniem"
+        );
+        renderView(
+          "project-detail",
+          projectOverviewNav(root.dataset.projectId || projectId, { listTab: "tasks" })
+        );
+        return;
+      }
+
+      const sourceId = event.dataTransfer.getData("text/plain") || dragTaskId;
+      let mode = "after";
+      if (item.classList.contains("drop-before")) mode = "before";
+      else if (item.classList.contains("drop-nest")) mode = "nest";
+      clearDropMarkers();
+      if (!sourceId || !targetId || sourceId === targetId) return;
+      const moved = moveProjectTask(root.dataset.projectId || projectId, sourceId, {
+        mode,
+        targetId,
+      });
+      if (!moved) {
+        if (!moveProjectTask.lastError) {
+          showTypeToast("Nie można przenieść tego zadania");
+        }
+        return;
+      }
+      showTypeToast(
+        mode === "nest" ? "Zagnieżdżono zadanie" : "Zmieniono kolejność zadań"
+      );
+      renderView(
+        "project-detail",
+        projectOverviewNav(root.dataset.projectId || projectId, { listTab: "tasks" })
+      );
+    });
+  });
+}
+
+function bindProjectTasksSharedControls(projectId) {
+  const panel = content.querySelector('[data-role="project-tasks-panel"]');
+  if (!panel) return;
+  const pid = panel.dataset.projectId || projectId;
+  const viewMode = panel.dataset.viewMode || "";
+  if (viewMode !== "cards" && viewMode !== "table") return;
+
+  setWorkflowRuntime({ mode: "project", projectId: pid });
+
+  const refresh = () => {
+    renderView("project-detail", projectOverviewNav(pid, { listTab: "tasks" }));
+  };
+
+  const ensureProjectRuntime = () => {
+    setWorkflowRuntime({ mode: "project", projectId: pid });
+    const project = getProjectById(pid);
+    if (!project) return null;
+    if (project.flowInstance && Array.isArray(project.flowInstance.tasks)) return project;
+    return persistProject({
+      ...project,
+      flowInstance: {
+        sourcePathId: project.flowInstance?.sourcePathId || null,
+        sourcePathName: project.flowInstance?.sourcePathName || "Flow projektu",
+        generatedAt: project.flowInstance?.generatedAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        tasks: [],
+      },
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  panel.querySelectorAll('[data-role="workflow-docs-toggle"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const layout = panel.querySelector('[data-role="workflow-layout"]');
+      const docsPanel = panel.querySelector('[data-role="workflow-documents"]');
+      const reopen = panel.querySelector(".workflow-docs-reopen");
+      const next = !isWorkflowDocsCollapsed();
+      setWorkflowDocsCollapsed(next);
+      layout?.classList.toggle("is-docs-collapsed", next);
+      if (docsPanel) docsPanel.hidden = next;
+      if (reopen) reopen.hidden = !next;
+      if (viewMode === "cards") {
+        requestAnimationFrame(() => drawWorkflowDependencyLinks());
+      }
+    });
+  });
+
+  panel.querySelectorAll('[data-role="workflow-locate-task"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      focusWorkflowTaskFromDoc(btn.dataset.docId);
+    });
+  });
+
+  panel
+    .querySelectorAll('[data-role="tasks-cards-add-root"], [data-role="tasks-table-add-root"]')
+    .forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        ensureProjectRuntime();
+        openWorkflowNameModal({
+          title: "Zadanie główne",
+          eyebrow: getProjectById(pid)?.title || "Projekt",
+          placeholder: "np. Projekt budowlany",
+          onSave: (name) => {
+            ensureProjectRuntime();
+            const task = createWorkflowTask(name, null);
+            if (!task) {
+              showTypeToast("Nie udało się dodać zadania");
+              return;
+            }
+            showTypeToast(`Dodano zadanie: ${task.name}`);
+            refresh();
+          },
+        });
+      });
+    });
+
+  panel.querySelectorAll('[data-role="workflow-add-child"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      ensureProjectRuntime();
+      const parentId = btn.dataset.taskId;
+      const active = getActiveWorkflowPath();
+      const parent = active?.tasks?.find((task) => task.id === parentId);
+      if (active && parentId) {
+        setWorkflowTaskExpanded(active.id, parentId, true);
+        const map = loadTaskExpandState(pid);
+        map[parentId] = true;
+        saveTaskExpandState(pid, map);
+      }
+      openWorkflowNameModal({
+        title: "Podzadanie",
+        eyebrow: parent?.name || active?.name || "Flow",
+        placeholder: "np. Korekty dokumentacji",
+        onSave: (name) => {
+          ensureProjectRuntime();
+          const task = createWorkflowTask(name, parentId);
+          if (!task) {
+            showTypeToast("Nie udało się dodać podzadania");
+            return;
+          }
+          showTypeToast(`Dodano podzadanie: ${task.name}`);
+          refresh();
+        },
+      });
+    });
+  });
+
+  panel.querySelectorAll('[data-role="delete-project-task"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const taskId = btn.dataset.taskId;
+      if (!confirmAndDeleteProjectTask(btn.dataset.projectId || pid, taskId)) return;
+      refresh();
+    });
+  });
+
+  bindWorkflowDocDrag();
+
+  if (viewMode === "table") {
+    const rows = panel.querySelectorAll('tbody tr[data-role="open-task"]');
+    rows.forEach((row) => {
+      row.addEventListener("dragover", (event) => {
+        if (!workflowDocDragState) return;
+        event.preventDefault();
+        event.stopPropagation();
+        rows.forEach((other) => other.classList.remove("drop-link-doc", "drop-link-blocked"));
+        const targetId = row.dataset.taskId;
+        const docId = workflowDocDragState.docId;
+        if (workflowDocDragState.sourceTaskId && workflowDocDragState.sourceTaskId === targetId) {
+          event.dataTransfer.dropEffect = "none";
+          return;
+        }
+        if (!canAssignWorkflowDocToTask(targetId, docId)) {
+          row.classList.add("drop-link-blocked");
+          event.dataTransfer.dropEffect = "none";
+          return;
+        }
+        row.classList.add("drop-link-doc");
+        event.dataTransfer.dropEffect = workflowDocDragState.sourceTaskId ? "move" : "copy";
+      });
+      row.addEventListener("dragleave", (event) => {
+        if (!row.contains(event.relatedTarget)) {
+          row.classList.remove("drop-link-doc", "drop-link-blocked");
+        }
+      });
+      row.addEventListener("drop", (event) => {
+        if (!workflowDocDragState && !event.dataTransfer.getData("text/workflow-doc")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const docId =
+          event.dataTransfer.getData("text/workflow-doc") || workflowDocDragState?.docId || "";
+        const sourceTaskId =
+          event.dataTransfer.getData("text/workflow-doc-source-task") ||
+          workflowDocDragState?.sourceTaskId ||
+          "";
+        const targetId = row.dataset.taskId;
+        row.classList.remove("drop-link-doc", "drop-link-blocked");
+        if (!docId || !targetId) return;
+        if (sourceTaskId && sourceTaskId === targetId) return;
+        if (!canAssignWorkflowDocToTask(targetId, docId)) {
+          showTypeToast("To zadanie ma już powiązany dokument");
+          return;
+        }
+        linkWorkflowTaskDocument(targetId, docId);
+        workflowDocDragState = null;
+        showTypeToast(
+          sourceTaskId ? "Przepięto dokument na inne zadanie" : "Powiązano dokument z zadaniem"
+        );
+        refresh();
+      });
+    });
+  }
+
+  applyWorkflowTaskHighlight();
+}
+
 function bindTaskTableFilters() {
   const panel = content.querySelector('[data-role="project-tasks-panel"]');
   if (!panel || panel.dataset.viewMode !== "table") return;
@@ -6941,16 +11727,21 @@ function bindTaskTableFilters() {
       const searchBlob = row.dataset.filterSearch || "";
       const searchMatch = searchWords.every((word) => searchBlob.includes(word));
       const match = colMatch && searchMatch;
-      row.hidden = !match;
-      if (match) visible += 1;
+      const treeHidden = row.classList.contains("is-tree-hidden");
+      row.hidden = !match || treeHidden;
+      if (match && !treeHidden) visible += 1;
     });
 
     if (countEl) {
       countEl.textContent =
-        visible === rows.length ? `${rows.length} zadań` : `${visible} z ${rows.length} zadań`;
+        visible === rows.filter((r) => !r.classList.contains("is-tree-hidden")).length
+          ? `${visible} zadań`
+          : `${visible} z ${rows.length} zadań`;
     }
     if (emptyEl) emptyEl.hidden = visible > 0;
   };
+
+  panel._applyTaskFilters = applyFilter;
 
   panel.querySelectorAll('[data-role="filter-task-col"]').forEach((el) => {
     el.addEventListener("input", applyFilter);
@@ -6966,6 +11757,34 @@ function bindTaskTableFilters() {
     });
     if (searchInput) searchInput.value = "";
     applyFilter();
+  });
+
+  panel.querySelectorAll('[data-role="toggle-task-expand"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const pid = btn.dataset.projectId;
+      const tid = btn.dataset.taskId;
+      if (!pid || !tid) return;
+      toggleTaskExpandState(pid, tid);
+      syncTaskTreeDom(panel);
+    });
+  });
+
+  panel.querySelector('[data-role="tasks-expand-all"]')?.addEventListener("click", () => {
+    const pid = panel.dataset.projectId;
+    const project = getProjectById(pid);
+    if (!project) return;
+    setAllTaskExpandState(pid, collectProjectTasks(project), true);
+    syncTaskTreeDom(panel);
+  });
+
+  panel.querySelector('[data-role="tasks-collapse-roots"]')?.addEventListener("click", () => {
+    const pid = panel.dataset.projectId;
+    const project = getProjectById(pid);
+    if (!project) return;
+    collapseTasksToRootLevel(pid, collectProjectTasks(project));
+    syncTaskTreeDom(panel);
   });
 
   applyFilter();
@@ -7073,6 +11892,176 @@ function bindTaskSelection(projectId) {
 /** @type {{ mode: "due" | "owner", projectId: string, taskIds: string[] } | null} */
 let bulkTaskContext = null;
 
+function ganttBarAnchorPoints(bar, bodyRect) {
+  const rect = bar.getBoundingClientRect();
+  const left = rect.left - bodyRect.left;
+  const right = rect.right - bodyRect.left;
+  const top = rect.top - bodyRect.top;
+  const bottom = rect.bottom - bodyRect.top;
+  const midY = top + rect.height / 2;
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    midY,
+    cx: left + rect.width / 2,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+/** FS: wyjście z dołu/góry źródła → wejście z boku celu (bez grotu). */
+function buildGanttDependencyPath(from, to) {
+  const exitBottom = to.midY >= from.midY;
+  const x1 = from.cx;
+  const y1 = exitBottom ? from.bottom : from.top;
+  const stub = 11;
+  const yStub = exitBottom ? y1 + stub : y1 - stub;
+
+  const enterFromLeft = to.cx >= from.cx;
+  const x2 = enterFromLeft ? to.left : to.right;
+  const y2 = to.midY;
+  const laneX = enterFromLeft ? x2 - 12 : x2 + 12;
+
+  if (Math.abs(yStub - y2) < 1.5) {
+    return `M ${x1} ${y1} L ${x1} ${yStub} L ${x2} ${y2}`;
+  }
+  return `M ${x1} ${y1} L ${x1} ${yStub} L ${laneX} ${yStub} L ${laneX} ${y2} L ${x2} ${y2}`;
+}
+
+function drawGanttDependencyLinks(root) {
+  const body = root?.querySelector('[data-role="gantt-body"]');
+  const svg = body?.querySelector('[data-role="gantt-dep-svg"]');
+  if (!body || !svg) return;
+
+  const width = Math.max(1, body.scrollWidth || body.clientWidth);
+  const height = Math.max(1, body.scrollHeight || body.clientHeight);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", String(width));
+  svg.setAttribute("height", String(height));
+  svg.style.width = `${width}px`;
+  svg.style.height = `${height}px`;
+
+  const bodyRect = body.getBoundingClientRect();
+  const barMap = new Map();
+  body.querySelectorAll('[data-role="gantt-bar"]').forEach((bar) => {
+    const row = bar.closest('[data-role="gantt-row"]');
+    if (!row || row.hidden || row.classList.contains("is-tree-hidden")) return;
+    const taskId = bar.dataset.taskId;
+    const projectId = bar.dataset.projectId;
+    if (!taskId || !projectId) return;
+    barMap.set(`${projectId}::${taskId}`, {
+      bar,
+      ...ganttBarAnchorPoints(bar, bodyRect),
+      parentId: bar.dataset.parentId || "",
+      projectId,
+      taskId,
+    });
+  });
+
+  const projectsCache = new Map();
+  const getEdges = (projectId) => {
+    if (!projectsCache.has(projectId)) {
+      const project = getProjectById(projectId);
+      projectsCache.set(projectId, project ? collectProjectDependencyEdges(project) : []);
+    }
+    return projectsCache.get(projectId);
+  };
+
+  const laneEdges = [];
+  barMap.forEach((fromMeta) => {
+    getEdges(fromMeta.projectId).forEach((edge) => {
+      if (String(edge.from) !== String(fromMeta.taskId)) return;
+      const toMeta = barMap.get(`${fromMeta.projectId}::${edge.to}`);
+      if (!toMeta) return;
+      if ((fromMeta.parentId || "") !== (toMeta.parentId || "")) return;
+      laneEdges.push({
+        id: `${fromMeta.taskId}__${toMeta.taskId}`,
+        from: fromMeta.taskId,
+        to: toMeta.taskId,
+        projectId: fromMeta.projectId,
+        d: buildGanttDependencyPath(fromMeta, toMeta),
+      });
+    });
+  });
+
+  const groups = laneEdges
+    .map(
+      (edge) => `
+      <g class="gantt-dep-edge" data-edge-id="${escapeHtml(edge.id)}" data-from="${escapeHtml(
+        edge.from
+      )}" data-to="${escapeHtml(edge.to)}" data-project-id="${escapeHtml(edge.projectId)}">
+        <path class="gantt-dep-hit" d="${edge.d}" />
+        <path class="gantt-dep-line" d="${edge.d}" />
+      </g>`
+    )
+    .join("");
+
+  svg.innerHTML = `
+    ${groups}
+    <path class="gantt-dep-preview" data-role="gantt-dep-preview" hidden d="" />
+  `;
+
+  const clearEdgeHover = () => {
+    svg.classList.remove("is-hovering");
+    svg.querySelectorAll(".gantt-dep-edge").forEach((other) => {
+      other.classList.remove("is-hot");
+    });
+  };
+
+  svg.classList.remove("is-hovering");
+  svg.querySelectorAll(".gantt-dep-edge").forEach((group) => {
+    group.addEventListener("pointerenter", () => {
+      svg.classList.add("is-hovering");
+      svg.querySelectorAll(".gantt-dep-edge").forEach((other) => {
+        other.classList.toggle("is-hot", other === group);
+      });
+    });
+    group.addEventListener("pointerleave", clearEdgeHover);
+    group.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const fromId = group.dataset.from;
+      const toId = group.dataset.to;
+      const projectId = group.dataset.projectId;
+      if (!fromId || !toId || !projectId) return;
+      if (!setProjectTaskDependency(projectId, fromId, toId, { remove: true })) return;
+      showTypeToast("Usunięto powiązanie");
+      renderView("project-detail", projectOverviewNav(projectId, { listTab: "tasks" }));
+    });
+  });
+
+  barMap.forEach((meta) => {
+    if (meta.bar._ganttDepHoverBound) return;
+    meta.bar._ganttDepHoverBound = true;
+    meta.bar.addEventListener("pointerenter", () => {
+      const liveSvg = body.querySelector('[data-role="gantt-dep-svg"]');
+      if (!liveSvg) return;
+      const taskId = meta.bar.dataset.taskId;
+      let any = false;
+      liveSvg.querySelectorAll(".gantt-dep-edge").forEach((group) => {
+        const hot =
+          String(group.dataset.from) === String(taskId) ||
+          String(group.dataset.to) === String(taskId);
+        group.classList.toggle("is-hot", hot);
+        if (hot) any = true;
+      });
+      liveSvg.classList.toggle("is-hovering", any);
+    });
+    meta.bar.addEventListener("pointerleave", (event) => {
+      const next = event.relatedTarget?.closest?.('[data-role="gantt-bar"]');
+      if (next) return;
+      const liveSvg = body.querySelector('[data-role="gantt-dep-svg"]');
+      if (!liveSvg) return;
+      liveSvg.classList.remove("is-hovering");
+      liveSvg.querySelectorAll(".gantt-dep-edge").forEach((group) => {
+        group.classList.remove("is-hot");
+      });
+    });
+  });
+}
+
 function bindGanttBoard(projectId) {
   const root = content.querySelector('[data-role="tasks-gantt-view"]');
   if (!root) return;
@@ -7090,27 +12079,66 @@ function bindGanttBoard(projectId) {
   });
 
   const filterLabels = { project: "Projekt", owner: "Właściciel", status: "Status" };
-  const applyGanttFilters = () => {
+  const rowFilterMatch = (el) => {
     const projects = readGanttMultiFilter(root, "project");
     const owners = readGanttMultiFilter(root, "owner");
     const statuses = readGanttMultiFilter(root, "status");
-    const matches = (el) => {
-      const projectOk = !projects || projects.has(String(el.dataset.projectId || ""));
-      const ownerOk = !owners || owners.has(String(el.dataset.ownerId || ""));
-      const statusOk = !statuses || statuses.has(String(el.dataset.statusKey || ""));
-      return projectOk && ownerOk && statusOk;
-    };
+    const projectOk = !projects || projects.has(String(el.dataset.projectId || ""));
+    const ownerOk = !owners || owners.has(String(el.dataset.ownerId || ""));
+    const statusOk = !statuses || statuses.has(String(el.dataset.statusKey || ""));
+    return projectOk && ownerOk && statusOk;
+  };
+
+  const syncGanttTreeDom = () => {
+    const rows = [...root.querySelectorAll('[data-role="gantt-row"]')];
+    const byProject = new Map();
+    rows.forEach((row) => {
+      const pid = String(row.dataset.projectId || "");
+      if (!byProject.has(pid)) byProject.set(pid, []);
+      byProject.get(pid).push(row);
+    });
+
+    byProject.forEach((projectRows, pid) => {
+      const expandMap = loadTaskExpandState(pid);
+      const byId = new Map(
+        projectRows.map((row) => [
+          String(row.dataset.taskId || ""),
+          {
+            id: row.dataset.taskId,
+            parentId: row.dataset.parentId || null,
+            depth: Number(row.dataset.depth) || 0,
+            hasChildren: row.classList.contains("has-children"),
+          },
+        ])
+      );
+      projectRows.forEach((row) => {
+        const task = byId.get(String(row.dataset.taskId || ""));
+        const treeHidden = task
+          ? ganttTaskTreeHidden(pid, task, byId, expandMap)
+          : false;
+        row.dataset.treeHidden = treeHidden ? "1" : "0";
+        row.classList.toggle("is-tree-hidden", treeHidden);
+        const toggle = row.querySelector('[data-role="gantt-toggle-expand"]');
+        if (toggle && task) {
+          const expanded = isTaskNodeExpanded(pid, task, expandMap);
+          toggle.classList.toggle("is-expanded", expanded);
+          toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+          toggle.title = expanded ? "Zwiń" : "Rozwiń";
+          toggle.setAttribute(
+            "aria-label",
+            expanded ? "Zwiń podzadania" : "Rozwiń podzadania"
+          );
+        }
+      });
+    });
+  };
+
+  const applyGanttFilters = () => {
     root.querySelectorAll('[data-role="gantt-row"]').forEach((row) => {
-      row.hidden = !matches(row);
+      const treeHidden = row.dataset.treeHidden === "1";
+      row.hidden = treeHidden || !rowFilterMatch(row);
     });
-    let unscheduledVisible = 0;
-    root.querySelectorAll('[data-role="gantt-unscheduled-item"]').forEach((item) => {
-      const show = matches(item);
-      item.hidden = !show;
-      if (show) unscheduledVisible += 1;
-    });
-    const countEl = root.querySelector('[data-role="gantt-unscheduled-count"]');
-    if (countEl) countEl.textContent = String(unscheduledVisible);
+    drawGanttDependencyLinks(root);
   };
 
   root.querySelectorAll('[data-role="gantt-multi-filter"]').forEach((wrap) => {
@@ -7137,69 +12165,27 @@ function bindGanttBoard(projectId) {
       });
     });
   });
+
+  root.querySelectorAll('[data-role="gantt-toggle-expand"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const pid = btn.dataset.projectId;
+      const tid = btn.dataset.taskId;
+      if (!pid || !tid) return;
+      toggleTaskExpandState(pid, tid);
+      syncGanttTreeDom();
+      applyGanttFilters();
+    });
+  });
+
+  syncGanttTreeDom();
   applyGanttFilters();
-
-  const body = root.querySelector('[data-role="gantt-body"]');
-  let dragKey = "";
-  root.querySelectorAll('[data-role="gantt-reorder"]').forEach((label) => {
-    label.addEventListener("dragstart", (event) => {
-      dragKey = `${label.dataset.projectId || ""}::${label.dataset.taskId || ""}`;
-      label.classList.add("is-dragging");
-      label.closest(".gantt-row")?.classList.add("is-reordering");
-      event.dataTransfer.effectAllowed = "move";
-      event.dataTransfer.setData("text/plain", dragKey);
-      event.stopPropagation();
-    });
-    label.addEventListener("dragend", () => {
-      label.classList.remove("is-dragging");
-      root.querySelectorAll(".gantt-row").forEach((row) => {
-        row.classList.remove("is-reordering", "is-drop-before", "is-drop-after");
-      });
-      dragKey = "";
-    });
-  });
-
-  root.querySelectorAll('[data-role="gantt-row"]').forEach((row) => {
-    row.addEventListener("dragover", (event) => {
-      if (!dragKey) return;
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "move";
-      const rect = row.getBoundingClientRect();
-      const before = event.clientY < rect.top + rect.height / 2;
-      row.classList.toggle("is-drop-before", before);
-      row.classList.toggle("is-drop-after", !before);
-    });
-    row.addEventListener("dragleave", () => {
-      row.classList.remove("is-drop-before", "is-drop-after");
-    });
-    row.addEventListener("drop", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const fromKey = event.dataTransfer.getData("text/plain") || dragKey;
-      const toKey = `${row.dataset.projectId || ""}::${row.dataset.taskId || ""}`;
-      row.classList.remove("is-drop-before", "is-drop-after");
-      if (!body || !fromKey || !toKey || fromKey === toKey) return;
-      const [fromProjectId, fromTaskId] = fromKey.split("::");
-      if (!fromProjectId || !fromTaskId) return;
-      const fromRow = body.querySelector(
-        `[data-role="gantt-row"][data-project-id="${CSS.escape(fromProjectId)}"][data-task-id="${CSS.escape(fromTaskId)}"]`
-      );
-      if (!fromRow || fromRow === row) return;
-      const rect = row.getBoundingClientRect();
-      const before = event.clientY < rect.top + rect.height / 2;
-      if (before) body.insertBefore(fromRow, row);
-      else row.after(fromRow);
-      const orderedIds = [...body.querySelectorAll('[data-role="gantt-row"]')].map(
-        (item) => `${item.dataset.projectId || ""}::${item.dataset.taskId || ""}`
-      );
-      persistGanttTaskOrder(id, orderedIds);
-      showTypeToast("Zmieniono kolejność zadań");
-    });
-  });
 
   const dayWidth = Number(root.dataset.dayWidth) || 16;
   const timelineWidth = Number(root.dataset.timelineWidth) || 0;
   const rangeStart = parseTaskDateOnly(root.dataset.rangeStart);
+  const body = root.querySelector('[data-role="gantt-body"]');
 
   const applyBarGeometry = (bar, leftPx, widthPx) => {
     let left = Math.round(leftPx / dayWidth) * dayWidth;
@@ -7235,6 +12221,8 @@ function bindGanttBoard(projectId) {
   root.querySelectorAll('[data-role="gantt-bar"]').forEach((bar) => {
     bar.addEventListener("mousedown", (event) => {
       if (event.button !== 0) return;
+      if (event.target.closest('[data-role="gantt-dep-port"]')) return;
+      if (bar.dataset.summary === "1" || bar.classList.contains("is-summary")) return;
       event.preventDefault();
       event.stopPropagation();
 
@@ -7257,6 +12245,7 @@ function bindGanttBoard(projectId) {
         } else if (mode === "resize-end") {
           applyBarGeometry(bar, originLeft, originWidth + dx);
         }
+        drawGanttDependencyLinks(root);
       };
 
       const onUp = () => {
@@ -7268,9 +12257,17 @@ function bindGanttBoard(projectId) {
         const taskProjectId = bar.dataset.projectId || id;
         const startIso = bar.dataset.start || "";
         const endIso = bar.dataset.end || "";
-        if (!taskId || !startIso || !endIso) return;
-        persistTaskSchedule(taskProjectId, taskId, startIso, endIso);
+        if (!taskId || !startIso || !endIso) {
+          drawGanttDependencyLinks(root);
+          return;
+        }
+        if (!persistTaskSchedule(taskProjectId, taskId, startIso, endIso)) {
+          applyBarGeometry(bar, originLeft, originWidth);
+          drawGanttDependencyLinks(root);
+          return;
+        }
         showTypeToast(`Termin: ${formatDateOnly(startIso)} – ${formatDateOnly(endIso)}`);
+        drawGanttDependencyLinks(root);
       };
 
       window.addEventListener("mousemove", onMove);
@@ -7278,33 +12275,144 @@ function bindGanttBoard(projectId) {
     });
   });
 
+  root.querySelectorAll('[data-role="gantt-dep-port"]').forEach((port) => {
+    port.addEventListener("mousedown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const fromBar = port.closest('[data-role="gantt-bar"]');
+      if (!fromBar || !body) return;
+      const fromId = fromBar.dataset.taskId;
+      const fromProjectId = fromBar.dataset.projectId || id;
+      const fromParentId = fromBar.dataset.parentId || "";
+      if (!fromId) return;
+
+      drawGanttDependencyLinks(root);
+      root.classList.add("is-dep-linking");
+      fromBar.classList.add("is-link-source");
+      const preview = body.querySelector('[data-role="gantt-dep-preview"]');
+
+      const updatePreview = (clientX, clientY) => {
+        if (!preview) return;
+        const pts = ganttBarAnchorPoints(fromBar, body.getBoundingClientRect());
+        const x1 = pts.cx;
+        const y1 = pts.bottom;
+        const rect = body.getBoundingClientRect();
+        const x2 = clientX - rect.left;
+        const y2 = clientY - rect.top;
+        preview.removeAttribute("hidden");
+        preview.setAttribute("d", `M ${x1} ${y1} L ${x2} ${y2}`);
+      };
+
+      const clearLinkUi = () => {
+        root.classList.remove("is-dep-linking");
+        fromBar.classList.remove("is-link-source");
+        root.querySelectorAll(".gantt-bar.is-link-target").forEach((el) => {
+          el.classList.remove("is-link-target", "is-link-invalid");
+        });
+        if (preview) {
+          preview.setAttribute("hidden", "");
+          preview.setAttribute("d", "");
+        }
+      };
+
+      updatePreview(event.clientX, event.clientY);
+
+      const onMove = (moveEvent) => {
+        updatePreview(moveEvent.clientX, moveEvent.clientY);
+        root.querySelectorAll(".gantt-bar.is-link-target").forEach((el) => {
+          el.classList.remove("is-link-target", "is-link-invalid");
+        });
+        const targetBar = moveEvent.target.closest?.('[data-role="gantt-bar"]');
+        if (!targetBar || targetBar === fromBar) return;
+        const sameProject = String(targetBar.dataset.projectId || "") === String(fromProjectId);
+        const sameLevel = String(targetBar.dataset.parentId || "") === String(fromParentId);
+        targetBar.classList.add("is-link-target");
+        if (!sameProject || !sameLevel) targetBar.classList.add("is-link-invalid");
+      };
+
+      const onUp = (upEvent) => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        const targetBar =
+          upEvent.target.closest?.('[data-role="gantt-bar"]') ||
+          document
+            .elementFromPoint(upEvent.clientX, upEvent.clientY)
+            ?.closest?.('[data-role="gantt-bar"]');
+        clearLinkUi();
+        if (!targetBar || targetBar === fromBar) {
+          drawGanttDependencyLinks(root);
+          return;
+        }
+        const toId = targetBar.dataset.taskId;
+        const toProjectId = targetBar.dataset.projectId || id;
+        if (!toId || String(toProjectId) !== String(fromProjectId)) {
+          showTypeToast("Powiązania tylko w obrębie tego samego projektu");
+          drawGanttDependencyLinks(root);
+          return;
+        }
+        if (String(targetBar.dataset.parentId || "") !== String(fromParentId)) {
+          showTypeToast("Powiązania tylko na tym samym poziomie");
+          drawGanttDependencyLinks(root);
+          return;
+        }
+        const predecessorId = fromId;
+        const successorId = toId;
+        if (
+          !setProjectTaskDependency(fromProjectId, predecessorId, successorId, {
+            remove: false,
+          })
+        ) {
+          drawGanttDependencyLinks(root);
+          return;
+        }
+        showTypeToast("Dodano powiązanie");
+        renderView("project-detail", projectOverviewNav(id, { listTab: "tasks" }));
+      };
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    });
+  });
+
+  requestAnimationFrame(() => drawGanttDependencyLinks(root));
+  if (typeof ResizeObserver !== "undefined" && body) {
+    root._ganttDepResizeObserver?.disconnect?.();
+    const observer = new ResizeObserver(() => drawGanttDependencyLinks(root));
+    observer.observe(body);
+    root._ganttDepResizeObserver = observer;
+  }
+
   const scroller = root.querySelector('[data-role="gantt-pan"]');
   if (!scroller) return;
+
+  scroller.addEventListener("scroll", () => drawGanttDependencyLinks(root), {
+    passive: true,
+  });
 
   scroller.addEventListener("mousedown", (event) => {
     if (event.button !== 0) return;
     if (
       event.target.closest(
-        ".gantt-bar, .gantt-label, .gantt-label-head, .gantt-scale, .gantt-filters, .gantt-multi-filter, button, summary, a, input, select, textarea, label"
+        ".gantt-bar, .gantt-label, .gantt-label-head, .gantt-tree-toggle, .gantt-scale, .gantt-filters, .gantt-multi-filter, .gantt-dep-edge, button, summary, a, input, select, textarea, label"
       )
     ) {
       return;
     }
     const startX = event.clientX;
-    const startY = event.clientY;
     const originLeft = scroller.scrollLeft;
-    const originTop = scroller.scrollTop;
     scroller.classList.add("is-panning");
     event.preventDefault();
 
     const onMove = (moveEvent) => {
       scroller.scrollLeft = originLeft - (moveEvent.clientX - startX);
-      scroller.scrollTop = originTop - (moveEvent.clientY - startY);
+      drawGanttDependencyLinks(root);
     };
     const onUp = () => {
       scroller.classList.remove("is-panning");
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      drawGanttDependencyLinks(root);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -7429,25 +12537,13 @@ function bindKanbanBoard(projectId) {
       const validStatuses = new Set(getKanbanStatuses().map((item) => item.id));
       if (!taskId || !validStatuses.has(status)) return;
 
-      if (!persistTaskBoardStatus(taskProjectId, taskId, status)) return;
+      const saved = persistTaskBoardStatus(taskProjectId, taskId, status);
+      if (!saved) return;
 
-      const card =
-        board.querySelector(
-          `[data-role="kanban-card"][data-project-id="${CSS.escape(
-            String(taskProjectId)
-          )}"][data-task-id="${CSS.escape(String(taskId))}"]`
-        ) ||
-        board.querySelector(
-          `[data-role="kanban-card"][data-task-id="${CSS.escape(String(taskId))}"]`
-        );
-      if (card) {
-        card.dataset.status = status;
-        card.dataset.statusKey = status;
-        zone.appendChild(card);
-        card.classList.remove("is-dragging");
-      }
+      syncTaskStatusDom(taskProjectId, saved.taskIds, status);
       applyKanbanFilters();
-      showTypeToast(`Status: ${boardStatusMeta(status).label}`);
+      const meta = boardStatusMeta(status);
+      showFormSavedToast(`Zmieniono status: ${meta.label}`);
     });
   });
 }
@@ -8018,18 +13114,30 @@ function bindFormalSurvey(projectId) {
     if (!project) return;
     const documents = evaluateFormalSurveyDocuments(surveyDraft.answers);
     const now = new Date().toISOString();
-    project.formalSurvey = {
-      answers: {
-        ...surveyDraft.answers,
-        media: Array.isArray(surveyDraft.answers.media) ? [...surveyDraft.answers.media] : [],
+    const mergedDocs =
+      typeof mergeSurveyDocumentsAddOnly === "function"
+        ? mergeSurveyDocumentsAddOnly(project.formalSurvey?.documents || [], documents)
+        : documents;
+    const nextProject = {
+      ...project,
+      formalSurvey: {
+        answers: {
+          ...surveyDraft.answers,
+          media: Array.isArray(surveyDraft.answers.media) ? [...surveyDraft.answers.media] : [],
+        },
+        documents: mergedDocs,
+        completedAt: project.formalSurvey?.completedAt || now,
+        updatedAt: now,
       },
-      documents,
-      completedAt: now,
       updatedAt: now,
     };
-    project.updatedAt = now;
-    persistProject(project);
-    showTypeToast(`Zapisano ${documents.length} dokumentów do złożenia`);
+    persistProject(nextProject);
+    const added = mergedDocs.length - (project.formalSurvey?.documents?.length || 0);
+    showTypeToast(
+      added > 0
+        ? `Zapisano ankietę — dodano ${added} dokumentów (łącznie ${mergedDocs.length})`
+        : `Zapisano ankietę — ${mergedDocs.length} dokumentów`
+    );
     setProjectListTab("tasks");
     renderView("project-detail", {
       ...projectOverviewNav(projectId, { listTab: "tasks" }),
@@ -8155,6 +13263,14 @@ function bindFormsTables(view) {
     });
   });
 
+  content.querySelectorAll('[data-role="delete-project"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      confirmAndDeleteProject(btn.dataset.projectId);
+    });
+  });
+
   content.querySelectorAll('[data-role="generate-building-project"]').forEach((btn) => {
     btn.addEventListener("click", (event) => {
       event.preventDefault();
@@ -8191,6 +13307,8 @@ function bindProjectOpeners(root = content) {
       el.dataset.role === "close-kpa" ||
       el.dataset.role === "open-linked-doc" ||
       el.dataset.role === "tasks-table" ||
+      el.dataset.role === "tasks-cards" ||
+      el.dataset.role === "tasks-flow" ||
       el.dataset.role === "tasks-gantt" ||
       el.dataset.role === "gantt-scale" ||
       el.dataset.role === "tasks-kanban" ||
@@ -8218,6 +13336,8 @@ function bindProjectOpeners(root = content) {
       el.dataset.role === "project-attach-input" ||
       el.dataset.role === "generate-building-project" ||
       el.dataset.role === "preview-building-form" ||
+      el.dataset.role === "delete-project" ||
+      el.dataset.role === "toggle-auto-schedule" ||
       el.dataset.role === "download-attachment" ||
       el.dataset.role === "sort-table" ||
       el.dataset.role === "filter-building-col" ||
@@ -8354,6 +13474,18 @@ function globalTasksTableHtml() {
   if (!rows.length) {
     return `<p class="files-empty-inline">Brak zadań we wszystkich projektach.</p>`;
   }
+
+  const ownerById = new Map();
+  rows.forEach(({ project, task }) => {
+    const id = String(task.ownerId || NO_OWNER.id);
+    if (ownerById.has(id)) return;
+    ownerById.set(id, ownerLabel(project, task.ownerId));
+  });
+  const ownerOptions = [...ownerById.entries()].sort((a, b) =>
+    String(a[1]).localeCompare(String(b[1]), "pl")
+  );
+  const statusOptions = getKanbanStatuses();
+
   return `
     <div class="tasks-table-toolbar table-toolbar">
       <label class="tasks-search search">
@@ -8369,16 +13501,10 @@ function globalTasksTableHtml() {
           autocomplete="off"
         />
       </label>
-      <select class="column-filter" data-role="filter-global-task-project" aria-label="Filtr projektu">
-        <option value="">Wszystkie projekty</option>
-        ${projects
-          .map(
-            (p) =>
-              `<option value="${escapeHtml(p.id)}">${escapeHtml(p.title || "Projekt")}</option>`
-          )
-          .join("")}
-      </select>
       <p class="table-filter-meta" data-role="global-task-filter-count">${rows.length} zadań</p>
+      <button type="button" class="ghost-btn table-action-btn" data-role="clear-global-task-filters">
+        Wyczyść filtry
+      </button>
     </div>
     <div class="data-table-wrap data-table-lined-wrap">
       <table class="data-table data-table-lined" data-role="global-tasks-table">
@@ -8391,11 +13517,93 @@ function globalTasksTableHtml() {
             <th>Wykonano</th>
             <th>Data do</th>
           </tr>
+          <tr class="filter-row">
+            <th>
+              <select
+                class="column-filter"
+                data-role="filter-global-task-col"
+                data-filter-key="project"
+                aria-label="Filtr projektu"
+              >
+                <option value="">Wszystkie</option>
+                ${projects
+                  .map(
+                    (p) =>
+                      `<option value="${escapeHtml(p.id)}">${escapeHtml(p.title || "Projekt")}</option>`
+                  )
+                  .join("")}
+              </select>
+            </th>
+            <th>
+              <input
+                type="search"
+                class="column-filter"
+                data-role="filter-global-task-col"
+                data-filter-key="name"
+                placeholder="Nazwa…"
+                aria-label="Filtr nazwy"
+                autocomplete="off"
+              />
+            </th>
+            <th>
+              <select
+                class="column-filter"
+                data-role="filter-global-task-col"
+                data-filter-key="owner"
+                aria-label="Filtr właściciela"
+              >
+                <option value="">Wszyscy</option>
+                ${ownerOptions
+                  .map(
+                    ([id, label]) =>
+                      `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`
+                  )
+                  .join("")}
+              </select>
+            </th>
+            <th>
+              <select
+                class="column-filter"
+                data-role="filter-global-task-col"
+                data-filter-key="status"
+                aria-label="Filtr statusu"
+              >
+                <option value="">Wszystkie</option>
+                ${statusOptions
+                  .map(
+                    (item) =>
+                      `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`
+                  )
+                  .join("")}
+              </select>
+            </th>
+            <th>
+              <input
+                type="search"
+                class="column-filter"
+                data-role="filter-global-task-col"
+                data-filter-key="progress"
+                placeholder="np. >=50"
+                aria-label="Filtr postępu"
+                autocomplete="off"
+              />
+            </th>
+            <th>
+              <input
+                type="date"
+                class="column-filter column-filter-date"
+                data-role="filter-global-task-col"
+                data-filter-key="due"
+                aria-label="Filtr daty zakończenia"
+              />
+            </th>
+          </tr>
         </thead>
         <tbody>
           ${rows
             .map(({ project, task }) => {
               const dueLabel = task.dueDate ? formatDateOnly(task.dueDate) : "—";
+              const ownerName = ownerLabel(project, task.ownerId);
               return `
             <tr
               class="is-row-clickable"
@@ -8404,8 +13612,15 @@ function globalTasksTableHtml() {
               data-task-id="${escapeHtml(task.id)}"
               data-project-id="${escapeHtml(project.id)}"
               data-filter-project="${escapeHtml(project.id)}"
+              data-filter-name="${escapeHtml(
+                `${task.name} ${task.typeLabel || ""}`.toLowerCase()
+              )}"
+              data-filter-owner="${escapeHtml(String(task.ownerId || NO_OWNER.id))}"
+              data-filter-status-key="${escapeHtml(task.statusKey || "")}"
+              data-filter-progress="${task.progress || 0}"
+              data-filter-due-iso="${escapeHtml(task.dueDate || "")}"
               data-filter-search="${escapeHtml(
-                `${project.title} ${task.name} ${task.status} ${ownerLabel(project, task.ownerId)}`.toLowerCase()
+                `${project.title} ${task.name} ${task.status} ${ownerName} ${dueLabel}`.toLowerCase()
               )}"
               tabindex="0"
             >
@@ -8418,7 +13633,7 @@ function globalTasksTableHtml() {
                   </div>
                 </div>
               </td>
-              <td>${escapeHtml(ownerLabel(project, task.ownerId))}</td>
+              <td>${escapeHtml(ownerName)}</td>
               <td>
                 <select
                   class="owner-select status-select"
@@ -8442,38 +13657,86 @@ function globalTasksTableHtml() {
             .join("")}
         </tbody>
       </table>
-    </div>`;
+    </div>
+    <p class="files-empty-inline attachment-filter-empty" data-role="global-task-filter-empty" hidden>
+      Brak zadań pasujących do filtrów.
+    </p>`;
 }
 
 function bindGlobalTasksTableFilters() {
   const panel = content.querySelector('[data-role="project-tasks-panel"][data-global="1"]');
   if (!panel) return;
   const searchInput = panel.querySelector('[data-role="filter-global-task-search"]');
-  const projectFilter = panel.querySelector('[data-role="filter-global-task-project"]');
   const countEl = panel.querySelector('[data-role="global-task-filter-count"]');
+  const emptyEl = panel.querySelector('[data-role="global-task-filter-empty"]');
   const rows = [...panel.querySelectorAll('tbody tr[data-role="open-task"]')];
+
+  const matchNumberFilter = (raw, value) => {
+    const query = String(raw || "").trim().toLowerCase();
+    if (!query) return true;
+    if (/^\d+$/.test(query)) return value === Number(query);
+    if (/^>=\d+$/.test(query)) return value >= Number(query.slice(2));
+    if (/^<=\d+$/.test(query)) return value <= Number(query.slice(2));
+    if (/^>\d+$/.test(query)) return value > Number(query.slice(1));
+    if (/^<\d+$/.test(query)) return value < Number(query.slice(1));
+    return String(value).includes(query);
+  };
+
   const apply = () => {
+    const filters = {};
+    panel.querySelectorAll('[data-role="filter-global-task-col"]').forEach((el) => {
+      const key = el.dataset.filterKey;
+      if (!key) return;
+      filters[key] = String(el.value || "").trim();
+    });
     const words = String(searchInput?.value || "")
       .trim()
       .toLowerCase()
       .split(/\s+/)
       .filter(Boolean);
-    const projectId = projectFilter?.value || "";
+
     let visible = 0;
     rows.forEach((row) => {
+      const colMatch = Object.entries(filters).every(([key, raw]) => {
+        if (!raw) return true;
+        if (key === "project") return row.dataset.filterProject === raw;
+        if (key === "owner") return row.dataset.filterOwner === raw;
+        if (key === "status") return row.dataset.filterStatusKey === raw;
+        if (key === "due") return row.dataset.filterDueIso === raw;
+        if (key === "progress") {
+          return matchNumberFilter(raw, Number(row.dataset.filterProgress || 0));
+        }
+        if (key === "name") {
+          return (row.dataset.filterName || "").includes(raw.toLowerCase());
+        }
+        return true;
+      });
       const searchOk = words.every((word) => (row.dataset.filterSearch || "").includes(word));
-      const projectOk = !projectId || row.dataset.filterProject === projectId;
-      const show = searchOk && projectOk;
+      const show = colMatch && searchOk;
       row.hidden = !show;
       if (show) visible += 1;
     });
+
     if (countEl) {
       countEl.textContent =
         visible === rows.length ? `${rows.length} zadań` : `${visible} z ${rows.length} zadań`;
     }
+    if (emptyEl) emptyEl.hidden = visible > 0;
   };
+
+  panel.querySelectorAll('[data-role="filter-global-task-col"]').forEach((el) => {
+    el.addEventListener("input", apply);
+    el.addEventListener("change", apply);
+    el.addEventListener("click", (event) => event.stopPropagation());
+  });
   searchInput?.addEventListener("input", apply);
-  projectFilter?.addEventListener("change", apply);
+  panel.querySelector('[data-role="clear-global-task-filters"]')?.addEventListener("click", () => {
+    panel.querySelectorAll('[data-role="filter-global-task-col"]').forEach((el) => {
+      el.value = "";
+    });
+    if (searchInput) searchInput.value = "";
+    apply();
+  });
   apply();
 }
 
@@ -8504,7 +13767,7 @@ function tasksCalendarViewHtml() {
           <p class="eyebrow">Workspace</p>
           <h1>Kalendarz zadań</h1>
           <p class="lede form-lede">
-            Ten sam widok zadań co w projekcie (tabela, Gantt, Kanban) — z filtrowaniem po projektach.
+            Lista wszystkich zadań z projektów — filtruj po projekcie, właścicielu i statusie.
           </p>
         </div>
         <button class="ghost-btn" type="button" data-view="dashboard">Wróć do pulpitu</button>
@@ -8626,12 +13889,11 @@ function openLinkedDocument(projectId, kind, linkId, { newTab = false } = {}) {
   const project = getProjectById(projectId);
   if (!project) return;
   if (kind === "building") {
-    renderView("project-detail", { projectId, panel: "building-form" });
+    navigateProjectPanel(projectId, { panel: "building-form" });
     return;
   }
   if (kind === "survey-doc") {
-    renderView("project-detail", {
-      projectId,
+    navigateProjectPanel(projectId, {
       panel: "doc-form",
       focusDocId: linkId,
     });
@@ -9012,10 +14274,7 @@ function bindKpaPanel(projectId) {
   root.querySelectorAll('[data-role="close-kpa"]').forEach((btn) => {
     btn.addEventListener("click", () => {
       setProjectListTab("tasks");
-      renderView(
-        "project-detail",
-        projectOverviewNav(btn.dataset.projectId || project.id, { listTab: "tasks" })
-      );
+      navigateProjectPanel(btn.dataset.projectId || project.id, { listTab: "tasks" });
     });
   });
 
@@ -9038,6 +14297,10 @@ function openAddTaskModal(projectId, options = {}) {
   const docOptions = collectLinkedDocumentOptions(project);
   const presetKind = options.linkedKind || "";
   const presetId = options.linkedId || "";
+  const parentTaskId = options.parentTaskId || "";
+  const parentTask = parentTaskId
+    ? collectProjectTasks(project).find((item) => String(item.id) === String(parentTaskId))
+    : null;
   const presetValue =
     presetKind && presetId ? `${presetKind}:${presetId}` : "";
   const presetLabel = presetValue
@@ -9060,9 +14323,13 @@ function openAddTaskModal(projectId, options = {}) {
     <div class="category-modal-dialog add-task-dialog" role="dialog" aria-modal="true" aria-labelledby="addTaskModalTitle">
       <header class="category-modal-head">
         <div>
-          <p class="eyebrow">Nowe zadanie</p>
+          <p class="eyebrow">${parentTask ? "Podzadanie" : "Nowe zadanie"}</p>
           <h2 id="addTaskModalTitle">${
-            presetValue ? "Dodaj zadanie powiązane" : "Dodaj zadanie"
+            parentTask
+              ? `Dodaj do: ${escapeHtml(parentTask.name)}`
+              : presetValue
+                ? "Dodaj zadanie powiązane"
+                : "Dodaj zadanie"
           }</h2>
         </div>
         <button type="button" class="icon-btn modal-close" data-role="close-add-task-modal" aria-label="Zamknij">
@@ -9220,6 +14487,7 @@ function openAddTaskModal(projectId, options = {}) {
             dueDate,
             ownerId,
             linkedDoc,
+            parentId: parentTaskId || null,
             updatedAt: new Date().toISOString(),
           },
         ],
@@ -9236,19 +14504,25 @@ function openAddTaskModal(projectId, options = {}) {
       closeAddTaskModal();
       showTypeToast(`Dodano zadanie: ${name}`);
       if (options.returnTo?.panel === "building-form") {
-        renderView("project-detail", { projectId: project.id, panel: "building-form" });
+        navigateProjectPanel(project.id, { panel: "building-form" });
         return;
       }
       if (options.returnTo?.panel === "doc-form") {
-        renderView("project-detail", {
-          projectId: project.id,
+        navigateProjectPanel(project.id, {
           panel: "doc-form",
           focusDocId: options.returnTo.focusDocId,
         });
         return;
       }
+      if (options.returnTo?.panel === "task-detail") {
+        navigateProjectPanel(project.id, {
+          panel: "task-detail",
+          focusTaskId: options.returnTo.focusTaskId || parentTaskId,
+        });
+        return;
+      }
       setProjectListTab("tasks");
-      renderView("project-detail", projectOverviewNav(project.id, { listTab: "tasks" }));
+      navigateProjectPanel(project.id, { listTab: "tasks" });
     }
   };
 }
@@ -9645,7 +14919,9 @@ function configurationViewHtml() {
             ${config.statuses
               .map(
                 (status, index) => `
-              <li class="config-row" data-status-id="${escapeHtml(status.id)}">
+              <li class="config-row" data-status-id="${escapeHtml(status.id)}" data-status-color="${escapeHtml(
+                  status.color || "gray"
+                )}">
                 <span class="config-order" aria-hidden="true">${index + 1}</span>
                 <input
                   type="text"
@@ -9654,6 +14930,18 @@ function configurationViewHtml() {
                   value="${escapeHtml(status.label)}"
                   aria-label="Nazwa statusu"
                 />
+                <select
+                  class="config-input config-color-select"
+                  data-role="status-color"
+                  aria-label="Kolor statusu"
+                >
+                  ${STATUS_COLOR_PALETTE.map(
+                    (swatch) => `
+                    <option value="${escapeHtml(swatch.id)}" ${
+                      String(status.color) === swatch.id ? "selected" : ""
+                    }>${escapeHtml(swatch.label)}</option>`
+                  ).join("")}
+                </select>
                 <label class="config-check">
                   <input
                     type="checkbox"
@@ -9730,12 +15018,1812 @@ function configurationViewHtml() {
     </section>`;
 }
 
+function workflowDocCatalog() {
+  if (isProjectWorkflowRuntime()) {
+    return projectFlowDocCatalog(getProjectById(workflowRuntime.projectId));
+  }
+  return typeof listAllPotentialWorkflowDocuments === "function"
+    ? listAllPotentialWorkflowDocuments()
+    : [];
+}
+
+/** Dokumenty w Flow projektu: tylko ankieta + Projekt budowlany. */
+function projectFlowDocCatalog(project) {
+  const docs = [
+    {
+      id: "building-project",
+      title: "Projekt budowlany",
+      source: "system",
+      group: "Zawsze w projekcie",
+      ruleHint: "Dokument bazowy projektu",
+    },
+  ];
+  const seen = new Set(["building-project"]);
+  (project?.formalSurvey?.documents || []).forEach((doc) => {
+    if (!doc?.id || seen.has(doc.id)) return;
+    seen.add(doc.id);
+    docs.push({
+      id: doc.id,
+      title: doc.title || doc.id,
+      source: doc.source || "standard",
+      group:
+        doc.source === "conditional" ? "Warunkowe z ankiety" : "Pakiet pozwolenia na budowę",
+      ruleHint: "Dokument z ankiety formalnej",
+    });
+  });
+  return docs;
+}
+
+function workflowDocTitleById(docId) {
+  if (!docId) return "";
+  if (typeof listAllPotentialWorkflowDocuments === "function") {
+    const hit = listAllPotentialWorkflowDocuments().find((doc) => doc.id === docId);
+    if (hit?.title) return hit.title;
+  }
+  if (isProjectWorkflowRuntime()) {
+    const project = getProjectById(workflowRuntime.projectId);
+    const hit = projectFlowDocCatalog(project).find((doc) => doc.id === docId);
+    if (hit?.title) return hit.title;
+  }
+  return docId;
+}
+
+function workflowTaskCardHtml(task, taskMap, highlightId, schedule = null) {
+  const docLabel = task.linkedDocId ? workflowDocTitleById(task.linkedDocId) : "";
+  const isHighlight = highlightId && highlightId === task.id;
+  const blockedBy = (task.blockedBy || [])
+    .map((id) => ({ id, name: taskMap.get(id)?.name }))
+    .filter((item) => item.name);
+  const sched = schedule?.get(task.id) || {};
+  const computedStart = sched.startDate || null;
+  const computedEnd = sched.endDate || null;
+  const rolledDuration = typeof sched.duration === "number" ? sched.duration : null;
+
+  return `
+    <li
+      class="workflow-task-item${isHighlight ? " is-highlighted" : ""}${
+        task.depth ? " is-nested" : ""
+      }${task.collapsedAway ? " is-collapsed-hidden" : ""}"
+      style="--wf-depth:${task.depth || 0}"
+      data-task-id="${escapeHtml(task.id)}"
+      data-parent-id="${escapeHtml(task.parentId || "")}"
+      data-depth="${task.depth || 0}"
+      draggable="true"
+    >
+      <div class="workflow-task-card">
+        <div class="workflow-task-top">
+          <button
+            type="button"
+            class="workflow-task-drag"
+            data-role="workflow-drag-handle"
+            title="Przeciągnij, aby zmienić kolejność"
+            aria-label="Przeciągnij zadanie"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M8 7h8M8 12h8M8 17h8" stroke-linecap="round" />
+            </svg>
+          </button>
+          ${
+            task.hasChildren
+              ? `<button
+                  type="button"
+                  class="workflow-task-toggle${task.expanded ? " is-expanded" : ""}"
+                  data-role="workflow-toggle-task"
+                  data-task-id="${escapeHtml(task.id)}"
+                  aria-expanded="${task.expanded ? "true" : "false"}"
+                  aria-label="${task.expanded ? "Zwiń podzadania" : "Rozwiń podzadania"}"
+                  title="${task.expanded ? "Zwiń" : "Rozwiń"}"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </button>`
+              : `<span class="workflow-task-toggle-spacer" aria-hidden="true"></span>`
+          }
+          <div class="workflow-task-main">
+            <span class="workflow-task-name" data-role="workflow-task-name">${escapeHtml(
+              task.name
+            )}</span>
+            ${
+              docLabel
+                ? `<span class="workflow-task-doc-row">
+                    <span
+                      class="workflow-task-doc"
+                      draggable="true"
+                      data-role="workflow-task-doc"
+                      data-doc-id="${escapeHtml(task.linkedDocId)}"
+                      data-task-id="${escapeHtml(task.id)}"
+                      title="Przeciągnij na inne zadanie (przepięcie) lub na listę dokumentów (odpięcie)"
+                    >
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                        <path d="M8 4.5h5.5L17.5 8v11.5H8A1.5 1.5 0 0 1 6.5 18V6A1.5 1.5 0 0 1 8 4.5Z" stroke-linejoin="round"/>
+                        <path d="M13.5 4.5V8H17.5" stroke-linejoin="round"/>
+                      </svg>
+                      ${escapeHtml(docLabel)}
+                    </span>
+                    <button
+                      type="button"
+                      class="workflow-task-auto-name"
+                      data-role="workflow-auto-name-from-doc"
+                      data-task-id="${escapeHtml(task.id)}"
+                      title="Ustaw nazwę: ${escapeHtml(workflowProductionTaskName(docLabel))}"
+                      aria-label="Wygeneruj nazwę Produkcja z dokumentu"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                        <path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3Z" stroke-linejoin="round" />
+                        <path d="M13.5 6.5l3 3" stroke-linecap="round" />
+                        <path d="M18.5 4.5l1 1M20 8h.01M16 3h.01" stroke-linecap="round" />
+                      </svg>
+                    </button>
+                  </span>`
+                : ""
+            }
+            <div class="workflow-schedule-meta">
+              <span title="${
+                task.isRoot && task.startDate
+                  ? "Data od (ustawiona na zadaniu najwyższym)"
+                  : "Data od (wyliczona)"
+              }">
+                Od: <strong>${escapeHtml(computedStart || "—")}</strong>
+              </span>
+              <span title="Data do (wyliczona, dni robocze PL)">
+                Do: <strong>${escapeHtml(computedEnd || "—")}</strong>
+              </span>
+            </div>
+          </div>
+          <div class="workflow-task-side-controls">
+            ${
+              blockedBy.length
+                ? `<div class="workflow-dep-chips">
+                ${blockedBy
+                  .map(
+                    (item) => `
+                  <span class="workflow-dep-chip">
+                    <span>Wymaga wykonania: ${escapeHtml(item.name)}</span>
+                    <button
+                      type="button"
+                      class="workflow-dep-chip-remove"
+                      data-role="workflow-remove-dep"
+                      data-from="${escapeHtml(item.id)}"
+                      data-to="${escapeHtml(task.id)}"
+                      title="Usuń powiązanie"
+                      aria-label="Usuń powiązanie"
+                    >×</button>
+                  </span>`
+                  )
+                  .join("")}
+              </div>`
+                : ""
+            }
+            <div class="workflow-task-metrics">
+            ${
+              workflowTaskAllowsManualStart(task)
+                ? `<label class="workflow-start-date">
+                    <span>Start</span>
+                    <input
+                      type="date"
+                      data-role="workflow-start-date"
+                      data-task-id="${escapeHtml(task.id)}"
+                      value="${escapeHtml(task.startDate || "")}"
+                    />
+                  </label>`
+                : blockedBy.length
+                  ? `<span class="workflow-start-date is-derived" title="Start wyliczany po zakończeniu wymaganych zadań">Start: auto</span>`
+                  : ""
+            }
+            ${
+              task.isLeaf
+                ? `<label class="workflow-duration">
+                    <input
+                      type="number"
+                      min="1"
+                      max="999"
+                      inputmode="numeric"
+                      data-role="workflow-duration"
+                      data-task-id="${escapeHtml(task.id)}"
+                      value="${task.durationDays != null ? escapeHtml(String(task.durationDays)) : ""}"
+                      placeholder="—"
+                      aria-label="Czas trwania w dniach"
+                    />
+                    <span>dni</span>
+                  </label>`
+                : `<div class="workflow-duration is-readonly" title="Suma dni w ciągu + max z równoległych (bez strzałek)">
+                    <span class="workflow-duration-value">${
+                      rolledDuration != null ? escapeHtml(String(rolledDuration)) : "—"
+                    }</span>
+                    <span>dni</span>
+                  </div>`
+            }
+            </div>
+          </div>
+        </div>
+        <div class="workflow-task-actions">
+          <button type="button" class="ghost-btn workflow-task-action" data-role="workflow-add-child" data-task-id="${escapeHtml(
+            task.id
+          )}">Dodaj podrzędne</button>
+          <button type="button" class="ghost-btn workflow-task-action" data-role="workflow-set-blocks" data-task-id="${escapeHtml(
+            task.id
+          )}">Wymaga wykonania</button>
+          <button type="button" class="ghost-btn workflow-task-action" data-role="workflow-link-doc" data-task-id="${escapeHtml(
+            task.id
+          )}">${task.linkedDocId ? "Zmień dokument" : "Powiąż z dokumentem"}</button>
+          <button type="button" class="ghost-btn workflow-task-action" data-role="workflow-edit-task" data-task-id="${escapeHtml(
+            task.id
+          )}">Edytuj</button>
+          <button type="button" class="ghost-btn workflow-task-action is-danger" data-role="workflow-delete-task" data-task-id="${escapeHtml(
+            task.id
+          )}">Usuń</button>
+        </div>
+        <div class="workflow-nest-hint" data-role="workflow-nest-hint">
+          Upuść tutaj, aby ustawić jako podzadanie
+        </div>
+        <div class="workflow-link-doc-hint" data-role="workflow-link-doc-hint">
+          Upuść, aby powiązać dokument z tym zadaniem
+        </div>
+      </div>
+    </li>`;
+}
+
+function workflowTasksPanelHtml(activePath) {
+  if (!activePath) {
+    return `
+      <aside class="panel workflow-tasks-panel workflow-tasks-panel-empty">
+        <p>Wybierz lub utwórz ścieżkę, aby dodać zadania.</p>
+      </aside>`;
+  }
+
+  const tasks = getWorkflowTasksForRender(activePath.id, activePath.tasks || []);
+  const taskMap = getWorkflowTaskMap(activePath.tasks || []);
+  const schedule = computeWorkflowSchedule(activePath.tasks || []);
+  const highlightId = workflowHighlightTaskId;
+
+  return `
+    <aside class="panel workflow-tasks-panel" data-role="workflow-tasks" data-path-id="${escapeHtml(
+      activePath.id
+    )}">
+      <div class="panel-head panel-head-actions">
+        <div class="workflow-tasks-heading">
+          <h2>Zadania ścieżki</h2>
+          <p class="workflow-active-badge">
+            Pracujesz nad: <strong>${escapeHtml(activePath.name)}</strong>
+          </p>
+        </div>
+        <div class="workflow-tasks-head-tools">
+          <button
+            type="button"
+            class="ghost-btn workflow-collapse-all-btn"
+            data-role="workflow-collapse-all"
+            title="Zwiń wszystkie podzadania"
+          >Zwiń wszystko</button>
+          <button
+            type="button"
+            class="workflow-path-add"
+            data-role="workflow-add-task"
+            aria-label="Dodaj zadanie"
+            title="Dodaj zadanie"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <p class="workflow-dep-legend">
+        Daty w dniach roboczych (PL). Data od — tylko na najwyższych zadaniach; reszta i data do są wyliczane.
+        Zadania bez strzałek są równoległe (max dni). Strzałki tylko między równorzędnymi — ustawiają kolejność.
+      </p>
+      ${
+        tasks.length
+          ? `<div class="workflow-task-canvas" data-role="workflow-task-canvas">
+              <svg class="workflow-dep-svg" data-role="workflow-dep-svg" aria-hidden="true"></svg>
+              <ul class="workflow-task-list" data-role="workflow-task-list">
+              ${tasks
+                .map((task) => workflowTaskCardHtml(task, taskMap, highlightId, schedule))
+                .join("")}
+              </ul>
+            </div>`
+          : `<p class="workflow-paths-empty">Brak zadań — kliknij + i nadaj nazwę pierwszemu krokowi.</p>`
+      }
+    </aside>`;
+}
+
+function workflowViewHtml() {
+  const state = loadWorkflowState();
+  const activePath = state.paths.find((item) => item.id === state.activePathId) || null;
+  const linkedDocIds = getLinkedDocIdsForPath(activePath);
+  const docs = workflowDocCatalog();
+  const groups = [];
+  const byGroup = new Map();
+  docs.forEach((doc) => {
+    const key = doc.group || "Inne";
+    if (!byGroup.has(key)) {
+      byGroup.set(key, []);
+      groups.push(key);
+    }
+    byGroup.get(key).push(doc);
+  });
+
+  return `
+    <section class="workflow-view">
+      <header class="form-intro">
+        <div class="form-intro-copy">
+          <p class="eyebrow">Procesy</p>
+          <h1>Definiowanie workflow</h1>
+          <p class="lede form-lede">
+            Ścieżki są rozdzielne — ten sam dokument możesz obrabiać inaczej w każdej z nich.
+            Wybierz ścieżkę, dodaj zadania i powiąż je z dokumentami katalogu.
+          </p>
+        </div>
+      </header>
+
+      <div class="panel workflow-paths-panel">
+        <div class="panel-head panel-head-actions">
+          <h2>Ścieżki workflow</h2>
+          <button
+            type="button"
+            class="workflow-path-add"
+            data-role="workflow-add-path"
+            aria-label="Dodaj ścieżkę"
+            title="Dodaj ścieżkę"
+          >
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+        <p class="config-lead">
+          Każda ścieżka ma własną definicję procesu wokół dokumentów systemu.
+          ${
+            activePath
+              ? `Aktywna ścieżka: <strong>${escapeHtml(activePath.name)}</strong>.`
+              : ""
+          }
+        </p>
+        ${
+          state.paths.length
+            ? `<ul class="workflow-path-list" data-role="workflow-path-list">
+                ${state.paths
+                  .map(
+                    (path) => `
+                  <li>
+                    <button
+                      type="button"
+                      class="workflow-path-item${
+                        path.id === state.activePathId ? " is-active" : ""
+                      }"
+                      data-role="workflow-select-path"
+                      data-path-id="${escapeHtml(path.id)}"
+                    >
+                      <span class="workflow-path-item-name">${escapeHtml(path.name)}</span>
+                    </button>
+                  </li>`
+                  )
+                  .join("")}
+              </ul>`
+            : `<p class="workflow-paths-empty">Brak ścieżek — kliknij + i nadaj nazwę pierwszej.</p>`
+        }
+      </div>
+
+      <div class="workflow-layout${isWorkflowDocsCollapsed() ? " is-docs-collapsed" : ""}" data-role="workflow-layout">
+        ${workflowTasksPanelHtml(activePath)}
+        <button
+          type="button"
+          class="workflow-docs-reopen"
+          data-role="workflow-docs-toggle"
+          aria-label="Pokaż dokumenty"
+          title="Pokaż dokumenty"
+          ${isWorkflowDocsCollapsed() ? "" : "hidden"}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path d="M15 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span>Dokumenty</span>
+        </button>
+        <article class="panel workflow-docs-panel" data-role="workflow-documents" ${
+          isWorkflowDocsCollapsed() ? "hidden" : ""
+        }>
+          <div class="panel-head panel-head-actions">
+            <h2>Dokumenty w systemie</h2>
+            <div class="workflow-docs-head-tools">
+              <span class="workflow-docs-count">${docs.length}</span>
+              <button
+                type="button"
+                class="workflow-docs-collapse"
+                data-role="workflow-docs-toggle"
+                aria-label="Ukryj dokumenty"
+                title="Ukryj dokumenty"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                  <path d="M9 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          <p class="config-lead">
+            Przeciągnij dokument na zadanie, aby powiązać. Zielony check = powiązany; celownik = znajdź zadanie.
+          </p>
+          <div class="workflow-docs-scroll" data-role="workflow-docs-drop">
+            ${groups
+              .map((group) => {
+                const items = byGroup.get(group) || [];
+                return `
+                <section class="workflow-doc-group">
+                  <h3 class="workflow-doc-group-title">${escapeHtml(group)}</h3>
+                  <ul class="workflow-doc-list">
+                    ${items
+                      .map((doc) => {
+                        const linked = linkedDocIds.has(doc.id);
+                        return `
+                      <li
+                        class="workflow-doc-item${linked ? " is-linked" : ""}"
+                        data-doc-id="${escapeHtml(doc.id)}"
+                        data-doc-source="${escapeHtml(
+                          doc.source === "system"
+                            ? "system"
+                            : doc.source === "standard"
+                              ? "standard"
+                              : "warunkowy"
+                        )}"
+                        draggable="true"
+                        data-role="workflow-doc-item"
+                        title="Przeciągnij na zadanie, aby powiązać"
+                      >
+                        <div class="workflow-doc-main">
+                          <span class="workflow-doc-title">${escapeHtml(doc.title)}</span>
+                          ${
+                            doc.ruleHint
+                              ? `<span class="workflow-doc-hint">${escapeHtml(doc.ruleHint)}</span>`
+                              : ""
+                          }
+                        </div>
+                        <div class="workflow-doc-side">
+                          ${
+                            linked
+                              ? `<div class="workflow-doc-linked-actions">
+                                  <span class="workflow-doc-check" title="Powiązany w aktywnej ścieżce" aria-label="Powiązany">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+                                      <path d="M5 12.5 10 17.5 19 7.5" stroke-linecap="round" stroke-linejoin="round" />
+                                    </svg>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    class="workflow-doc-locate"
+                                    data-role="workflow-locate-task"
+                                    data-doc-id="${escapeHtml(doc.id)}"
+                                    title="Pokaż zadanie w ścieżce"
+                                    aria-label="Pokaż zadanie w ścieżce"
+                                  >
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+                                      <circle cx="12" cy="12" r="3.2" />
+                                      <path d="M12 3.5v2.8M12 17.7v2.8M3.5 12h2.8M17.7 12h2.8" stroke-linecap="round" />
+                                    </svg>
+                                  </button>
+                                </div>`
+                              : `<span class="workflow-doc-meta">${escapeHtml(
+                                  doc.source === "system"
+                                    ? "system"
+                                    : doc.source === "standard"
+                                      ? "standard"
+                                      : "warunkowy"
+                                )}</span>`
+                          }
+                        </div>
+                      </li>`;
+                      })
+                      .join("")}
+                  </ul>
+                </section>`;
+              })
+              .join("")}
+          </div>
+          ${workflowCreateUnassignedDocsButtonHtml(
+            docs.filter((doc) => !linkedDocIds.has(doc.id)).length
+          )}
+        </article>
+      </div>
+    </section>`;
+}
+
+function ensureWorkflowModal() {
+  let modal = document.getElementById("workflowModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "workflowModal";
+    modal.className = "category-modal";
+    modal.hidden = true;
+    document.body.appendChild(modal);
+  }
+  return modal;
+}
+
+function closeWorkflowModal() {
+  const modal = document.getElementById("workflowModal");
+  if (modal) modal.hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function openWorkflowNameModal({ title, eyebrow, placeholder, fieldLabel, onSave }) {
+  const modal = ensureWorkflowModal();
+  modal.innerHTML = `
+    <div class="category-modal-backdrop" data-role="close-workflow-modal"></div>
+    <div class="category-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="workflowModalTitle">
+      <header class="category-modal-head">
+        <div>
+          <p class="eyebrow">${escapeHtml(eyebrow || "Workflow")}</p>
+          <h2 id="workflowModalTitle">${escapeHtml(title)}</h2>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-role="close-workflow-modal" aria-label="Zamknij">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
+      </header>
+      <div class="category-modal-body">
+        <label class="field">
+          <span class="field-label">${escapeHtml(fieldLabel || "Nazwa zadania")}</span>
+          <input
+            id="workflowModalName"
+            type="text"
+            required
+            maxlength="160"
+            placeholder="${escapeHtml(placeholder || "np. Wytworzenie dokumentacji")}"
+            autocomplete="off"
+          />
+        </label>
+      </div>
+      <footer class="category-modal-foot">
+        <button type="button" class="ghost-btn" data-role="close-workflow-modal">Anuluj</button>
+        <button type="button" class="primary-btn" data-role="save-workflow-modal">Zapisz</button>
+      </footer>
+    </div>
+  `;
+
+  const save = () => {
+    const input = modal.querySelector("#workflowModalName");
+    const name = input?.value.trim() || "";
+    if (!name) {
+      input?.focus();
+      showTypeToast("Podaj nazwę");
+      return;
+    }
+    onSave(name);
+    closeWorkflowModal();
+  };
+
+  modal.querySelectorAll('[data-role="close-workflow-modal"]').forEach((el) => {
+    el.addEventListener("click", closeWorkflowModal);
+  });
+  modal.querySelector('[data-role="save-workflow-modal"]')?.addEventListener("click", save);
+  modal.querySelector("#workflowModalName")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      save();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeWorkflowModal();
+    }
+  });
+
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  requestAnimationFrame(() => modal.querySelector("#workflowModalName")?.focus());
+}
+
+function openWorkflowPathCreateModal() {
+  const modal = ensureWorkflowModal();
+  modal.innerHTML = `
+    <div class="category-modal-backdrop" data-role="close-workflow-modal"></div>
+    <div class="category-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="workflowModalTitle">
+      <header class="category-modal-head">
+        <div>
+          <p class="eyebrow">Workflow</p>
+          <h2 id="workflowModalTitle">Nowa ścieżka</h2>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-role="close-workflow-modal" aria-label="Zamknij">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
+      </header>
+      <div class="category-modal-body">
+        <label class="field">
+          <span class="field-label">Nazwa ścieżki</span>
+          <input
+            id="workflowModalName"
+            type="text"
+            required
+            maxlength="120"
+            placeholder="np. Standardowy wniosek o PnB"
+            autocomplete="off"
+          />
+        </label>
+      </div>
+      <footer class="category-modal-foot">
+        <button type="button" class="ghost-btn" data-role="close-workflow-modal">Anuluj</button>
+        <button type="button" class="primary-btn" data-role="save-workflow-modal">Zapisz</button>
+      </footer>
+    </div>
+  `;
+
+  const save = () => {
+    const input = modal.querySelector("#workflowModalName");
+    const name = input?.value.trim() || "";
+    if (!name) {
+      input?.focus();
+      showTypeToast("Podaj nazwę ścieżki");
+      return;
+    }
+    const path = createWorkflowPath(name);
+    if (!path) return;
+    closeWorkflowModal();
+    showTypeToast(`Utworzono ścieżkę: ${path.name}`);
+    renderView("workflow");
+  };
+
+  modal.querySelectorAll('[data-role="close-workflow-modal"]').forEach((el) => {
+    el.addEventListener("click", closeWorkflowModal);
+  });
+  modal.querySelector('[data-role="save-workflow-modal"]')?.addEventListener("click", save);
+  modal.querySelector("#workflowModalName")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      save();
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeWorkflowModal();
+    }
+  });
+
+  modal.hidden = false;
+  requestAnimationFrame(() => modal.querySelector("#workflowModalName")?.focus());
+}
+
+function openWorkflowTaskPickerModal({ title, lead, taskId, selectedIds, onSave }) {
+  const path = getActiveWorkflowPath();
+  if (!path) return;
+  const source = (path.tasks || []).find((task) => task.id === taskId);
+  if (!source) return;
+  // Powiązania tylko w ramach tego samego poziomu (to samo parentId)
+  const options = sortWorkflowTasksTree(path.tasks || []).filter(
+    (task) => task.id !== taskId && workflowTasksSameLevel(source, task)
+  );
+  const selected = new Set(
+    (selectedIds || []).filter((id) => options.some((task) => task.id === id))
+  );
+  const modal = ensureWorkflowModal();
+
+  modal.innerHTML = `
+    <div class="category-modal-backdrop" data-role="close-workflow-modal"></div>
+    <div class="category-modal-dialog workflow-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="workflowModalTitle">
+      <header class="category-modal-head">
+        <div>
+          <p class="eyebrow">${escapeHtml(path.name)}</p>
+          <h2 id="workflowModalTitle">${escapeHtml(title)}</h2>
+          ${
+            lead
+              ? `<p class="workflow-modal-lead">${escapeHtml(lead)}</p>`
+              : ""
+          }
+          <p class="workflow-modal-lead">Tylko zadania z tego samego poziomu (równorzędne).</p>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-role="close-workflow-modal" aria-label="Zamknij">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
+      </header>
+      <div class="category-modal-body">
+        ${
+          options.length
+            ? `<ul class="workflow-picker-list">
+                ${options
+                  .map(
+                    (task) => `
+                  <li>
+                    <label class="workflow-picker-option" style="--wf-depth:${task.depth || 0}">
+                      <input
+                        type="checkbox"
+                        value="${escapeHtml(task.id)}"
+                        ${selected.has(task.id) ? "checked" : ""}
+                      />
+                      <span>${escapeHtml(task.name)}</span>
+                    </label>
+                  </li>`
+                  )
+                  .join("")}
+              </ul>`
+            : `<p class="workflow-paths-empty">Brak innych zadań na tym samym poziomie.</p>`
+        }
+      </div>
+      <footer class="category-modal-foot">
+        <button type="button" class="ghost-btn" data-role="close-workflow-modal">Anuluj</button>
+        <button type="button" class="primary-btn" data-role="save-workflow-modal" ${
+          options.length ? "" : "disabled"
+        }>Zapisz</button>
+      </footer>
+    </div>
+  `;
+
+  const save = () => {
+    const ids = [...modal.querySelectorAll('.workflow-picker-list input[type="checkbox"]:checked')].map(
+      (input) => input.value
+    );
+    onSave(ids);
+    closeWorkflowModal();
+  };
+
+  modal.querySelectorAll('[data-role="close-workflow-modal"]').forEach((el) => {
+    el.addEventListener("click", closeWorkflowModal);
+  });
+  modal.querySelector('[data-role="save-workflow-modal"]')?.addEventListener("click", save);
+  modal.hidden = false;
+}
+
+function openWorkflowDocPickerModal(taskId) {
+  const path = getActiveWorkflowPath();
+  if (!path) return;
+  const task = (path.tasks || []).find((item) => item.id === taskId);
+  if (!task) return;
+  const docs = workflowDocCatalog();
+  const linkedElsewhere = new Map();
+  (path.tasks || []).forEach((item) => {
+    if (item.linkedDocId && item.id !== taskId) {
+      linkedElsewhere.set(item.linkedDocId, item.name);
+    }
+  });
+  const modal = ensureWorkflowModal();
+
+  modal.innerHTML = `
+    <div class="category-modal-backdrop" data-role="close-workflow-modal"></div>
+    <div class="category-modal-dialog workflow-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="workflowModalTitle">
+      <header class="category-modal-head">
+        <div>
+          <p class="eyebrow">${escapeHtml(path.name)}</p>
+          <h2 id="workflowModalTitle">Powiąż z dokumentem</h2>
+          <p class="workflow-modal-lead">
+            Zadanie „${escapeHtml(task.name)}” stanie się krokiem wytworzenia wybranego dokumentu.
+          </p>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-role="close-workflow-modal" aria-label="Zamknij">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
+      </header>
+      <div class="category-modal-body">
+        <ul class="workflow-picker-list">
+          <li>
+            <label class="workflow-picker-option">
+              <input type="radio" name="workflow-doc" value="" ${task.linkedDocId ? "" : "checked"} />
+              <span>Bez dokumentu</span>
+            </label>
+          </li>
+          ${docs
+            .map((doc) => {
+              const other = linkedElsewhere.get(doc.id);
+              return `
+              <li>
+                <label class="workflow-picker-option">
+                  <input
+                    type="radio"
+                    name="workflow-doc"
+                    value="${escapeHtml(doc.id)}"
+                    ${task.linkedDocId === doc.id ? "checked" : ""}
+                  />
+                  <span>
+                    <strong>${escapeHtml(doc.title)}</strong>
+                    ${
+                      other
+                        ? `<em class="workflow-picker-note">obecnie: ${escapeHtml(other)}</em>`
+                        : ""
+                    }
+                  </span>
+                </label>
+              </li>`;
+            })
+            .join("")}
+        </ul>
+      </div>
+      <footer class="category-modal-foot">
+        <button type="button" class="ghost-btn" data-role="close-workflow-modal">Anuluj</button>
+        <button type="button" class="primary-btn" data-role="save-workflow-modal">Zapisz</button>
+      </footer>
+    </div>
+  `;
+
+  const save = () => {
+    const selected = modal.querySelector('input[name="workflow-doc"]:checked')?.value || "";
+    linkWorkflowTaskDocument(taskId, selected || null);
+    closeWorkflowModal();
+    showTypeToast(selected ? "Powiązano dokument z zadaniem" : "Usunięto powiązanie dokumentu");
+    softRefreshWorkflowTasks();
+  };
+
+  modal.querySelectorAll('[data-role="close-workflow-modal"]').forEach((el) => {
+    el.addEventListener("click", closeWorkflowModal);
+  });
+  modal.querySelector('[data-role="save-workflow-modal"]')?.addEventListener("click", save);
+  modal.hidden = false;
+}
+
+function assignWorkflowDependencyLanes(edges) {
+  const MAX_LANES = 4;
+  const sorted = [...edges].sort((a, b) => {
+    const aMin = Math.min(a.y1, a.y2);
+    const bMin = Math.min(b.y1, b.y2);
+    if (aMin !== bMin) return aMin - bMin;
+    return Math.abs(a.y2 - a.y1) - Math.abs(b.y2 - b.y1);
+  });
+
+  const laneMembers = Array.from({ length: MAX_LANES }, () => []);
+  sorted.forEach((edge) => {
+    const ymin = Math.min(edge.y1, edge.y2) - 6;
+    const ymax = Math.max(edge.y1, edge.y2) + 6;
+    let bestLane = 0;
+    let bestCount = Infinity;
+    for (let lane = 0; lane < MAX_LANES; lane += 1) {
+      const conflict = laneMembers[lane].some((other) => {
+        const otherMin = Math.min(other.y1, other.y2) - 6;
+        const otherMax = Math.max(other.y1, other.y2) + 6;
+        return !(ymax < otherMin || ymin > otherMax);
+      });
+      if (!conflict) {
+        bestLane = lane;
+        bestCount = -1;
+        break;
+      }
+      if (laneMembers[lane].length < bestCount) {
+        bestCount = laneMembers[lane].length;
+        bestLane = lane;
+      }
+    }
+    edge.lane = bestLane;
+    laneMembers[bestLane].push(edge);
+  });
+
+  const used = Math.max(
+    1,
+    sorted.reduce((max, edge) => Math.max(max, (edge.lane || 0) + 1), 1)
+  );
+  return { edges: sorted, usedLanes: Math.min(used, MAX_LANES), maxLanes: MAX_LANES };
+}
+
+function drawWorkflowDependencyLinks() {
+  const panel = content.querySelector('[data-role="workflow-tasks"]');
+  const canvas = panel?.querySelector('[data-role="workflow-task-canvas"]');
+  const svg = canvas?.querySelector('[data-role="workflow-dep-svg"]');
+  const list = canvas?.querySelector('[data-role="workflow-task-list"]');
+  if (!panel || !canvas || !svg || !list) return;
+
+  const path = getActiveWorkflowPath();
+  if (!path) {
+    svg.innerHTML = "";
+    return;
+  }
+
+  const canvasRect = canvas.getBoundingClientRect();
+  const width = Math.max(1, canvas.clientWidth);
+  const height = Math.max(1, canvas.scrollHeight || canvas.clientHeight);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", String(width));
+  svg.setAttribute("height", String(height));
+  svg.style.height = `${height}px`;
+  svg.style.width = `${width}px`;
+
+  const itemEls = [...list.querySelectorAll(".workflow-task-item:not(.is-collapsed-hidden)")].filter(
+    (el) => !el.hidden
+  );
+  const centers = new Map();
+  const EXIT_NUDGE = 8; // wyjście strzałki — nieco niżej od środka
+  const ENTER_NUDGE = 8; // wejście strzałki — nieco wyżej od środka
+  itemEls.forEach((el) => {
+    const rect = el.getBoundingClientRect();
+    const midY = rect.top - canvasRect.top + canvas.scrollTop + rect.height / 2;
+    const depth = Number(el.dataset.depth || 0);
+    const parentId = el.dataset.parentId || "";
+    centers.set(el.dataset.taskId, {
+      yExit: midY + EXIT_NUDGE,
+      yEnter: midY - ENTER_NUDGE,
+      depth,
+      parentId,
+      el,
+    });
+  });
+
+  const taskMap = getWorkflowTaskMap(path.tasks || []);
+  const rawEdges = [];
+  (path.tasks || []).forEach((task) => {
+    (task.blocks || []).forEach((targetId) => {
+      const target = taskMap.get(targetId);
+      if (!target || !workflowTasksSameLevel(task, target)) return;
+      if (!centers.has(task.id) || !centers.has(targetId)) return;
+      const from = centers.get(task.id);
+      const to = centers.get(targetId);
+      rawEdges.push({
+        id: `${task.id}__${targetId}`,
+        from: task.id,
+        to: targetId,
+        y1: from.yExit,
+        y2: to.yEnter,
+        depthFrom: from.depth,
+        depthTo: to.depth,
+      });
+    });
+  });
+
+  const { edges, usedLanes, maxLanes } = assignWorkflowDependencyLanes(rawEdges);
+  const gutterStart = 5;
+  const gutterEnd = 22;
+  const laneSpan = gutterEnd - gutterStart;
+  const step =
+    usedLanes <= 1 ? 0 : laneSpan / Math.max(1, Math.min(usedLanes, maxLanes) - 1);
+
+  const groups = edges
+    .map((edge) => {
+      const laneX =
+        usedLanes <= 1 ? gutterEnd - 2 : gutterStart + edge.lane * step;
+      const startX = 26 + edge.depthFrom * 12;
+      const endX = 26 + edge.depthTo * 12;
+      const d = `M ${startX} ${edge.y1} L ${laneX} ${edge.y1} L ${laneX} ${edge.y2} L ${endX} ${edge.y2}`;
+      return `
+        <g class="workflow-dep-edge" data-edge-id="${escapeHtml(edge.id)}" data-from="${escapeHtml(
+          edge.from
+        )}" data-to="${escapeHtml(edge.to)}">
+          <path class="workflow-dep-hit" d="${d}" />
+          <path class="workflow-dep-line" d="${d}" marker-end="url(#workflowDepArrow)" />
+          <circle class="workflow-dep-dot" cx="${startX}" cy="${edge.y1}" r="1.6" />
+        </g>`;
+    })
+    .join("");
+
+  svg.innerHTML = `
+    <defs>
+      <marker id="workflowDepArrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"></path>
+      </marker>
+      <marker id="workflowDepArrowHot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#f97316"></path>
+      </marker>
+    </defs>
+    ${groups}
+  `;
+
+  const trashLayer = canvas.querySelector('[data-role="workflow-dep-trash-layer"]');
+  if (trashLayer) trashLayer.remove();
+
+  svg.classList.remove("is-hovering");
+  svg.querySelectorAll(".workflow-dep-edge").forEach((group) => {
+    const activate = () => {
+      svg.classList.add("is-hovering");
+      svg.querySelectorAll(".workflow-dep-edge").forEach((other) => {
+        const hot = other === group;
+        other.classList.toggle("is-hot", hot);
+        other.querySelector(".workflow-dep-line")?.setAttribute(
+          "marker-end",
+          hot ? "url(#workflowDepArrowHot)" : "url(#workflowDepArrow)"
+        );
+      });
+    };
+    const clear = () => {
+      svg.classList.remove("is-hovering");
+      svg.querySelectorAll(".workflow-dep-edge").forEach((other) => {
+        other.classList.remove("is-hot");
+        other.querySelector(".workflow-dep-line")?.setAttribute(
+          "marker-end",
+          "url(#workflowDepArrow)"
+        );
+      });
+    };
+    group.addEventListener("pointerenter", activate);
+    group.addEventListener("pointerleave", clear);
+  });
+}
+
+function applyWorkflowCollapseVisibility() {
+  const path = getActiveWorkflowPath();
+  const list = content.querySelector('[data-role="workflow-task-list"]');
+  if (!path || !list) return;
+  const rendered = getWorkflowTasksForRender(path.id, path.tasks || []);
+  rendered.forEach((task) => {
+    const item = list.querySelector(`.workflow-task-item[data-task-id="${task.id}"]`);
+    if (!item) return;
+    item.classList.toggle("is-collapsed-hidden", Boolean(task.collapsedAway));
+    const toggle = item.querySelector('[data-role="workflow-toggle-task"]');
+    if (toggle) {
+      toggle.classList.toggle("is-expanded", Boolean(task.expanded));
+      toggle.setAttribute("aria-expanded", task.expanded ? "true" : "false");
+      toggle.title = task.expanded ? "Zwiń" : "Rozwiń";
+    }
+  });
+  // Po zmianie widoczności przelicz strzałki w dwóch klatkach — layout musi się ustabilizować
+  requestAnimationFrame(() => {
+    drawWorkflowDependencyLinks();
+    requestAnimationFrame(() => drawWorkflowDependencyLinks());
+  });
+}
+
+function refreshWorkflowDocsLinkedMarks() {
+  const path = getActiveWorkflowPath();
+  const linked = getLinkedDocIdsForPath(path);
+  content.querySelectorAll('[data-role="workflow-doc-item"]').forEach((item) => {
+    const docId = item.dataset.docId;
+    const isLinked = linked.has(docId);
+    item.classList.toggle("is-linked", isLinked);
+    const side = item.querySelector(".workflow-doc-side");
+    if (!side) return;
+    if (isLinked) {
+      side.innerHTML = `
+        <div class="workflow-doc-linked-actions">
+          <span class="workflow-doc-check" title="Powiązany w aktywnej ścieżce" aria-label="Powiązany">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
+              <path d="M5 12.5 10 17.5 19 7.5" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </span>
+          <button
+            type="button"
+            class="workflow-doc-locate"
+            data-role="workflow-locate-task"
+            data-doc-id="${escapeHtml(docId)}"
+            title="Pokaż zadanie w ścieżce"
+            aria-label="Pokaż zadanie w ścieżce"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <circle cx="12" cy="12" r="3.2" />
+              <path d="M12 3.5v2.8M12 17.7v2.8M3.5 12h2.8M17.7 12h2.8" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>`;
+      side.querySelector('[data-role="workflow-locate-task"]')?.addEventListener("click", () => {
+        focusWorkflowTaskFromDoc(docId);
+      });
+    } else {
+      const source = item.dataset.docSource || "warunkowy";
+      side.innerHTML = `<span class="workflow-doc-meta">${escapeHtml(source)}</span>`;
+    }
+  });
+}
+
+function refreshWorkflowUnassignedButton() {
+  const path = getActiveWorkflowPath();
+  const host = content.querySelector(".workflow-docs-unassigned");
+  if (!host) return;
+  const linked = getLinkedDocIdsForPath(path);
+  const count = workflowDocCatalog().filter((doc) => doc?.id && !linked.has(doc.id)).length;
+  const wrap = document.createElement("div");
+  wrap.innerHTML = workflowCreateUnassignedDocsButtonHtml(count);
+  const next = wrap.firstElementChild;
+  if (!next) return;
+  host.replaceWith(next);
+  bindWorkflowUnassignedDocsAction();
+}
+
+function softRefreshWorkflowTasks() {
+  if (
+    isProjectWorkflowRuntime() &&
+    (getTasksViewMode() === "cards" || getTasksViewMode() === "table")
+  ) {
+    renderView(
+      "project-detail",
+      projectOverviewNav(workflowRuntime.projectId, { listTab: "tasks" })
+    );
+    return;
+  }
+  const path = getActiveWorkflowPath();
+  const host = content.querySelector(".workflow-layout");
+  const current = content.querySelector('[data-role="workflow-tasks"]');
+  if (!path || !host || !current) {
+    if (isProjectWorkflowRuntime()) {
+      setTasksViewMode("flow");
+      renderView(
+        "project-detail",
+        projectOverviewNav(workflowRuntime.projectId, { listTab: "tasks" })
+      );
+    } else {
+      renderView("workflow");
+    }
+    return;
+  }
+  const wrap = document.createElement("div");
+  wrap.innerHTML = workflowTasksPanelHtml(path);
+  const next = wrap.firstElementChild;
+  current.replaceWith(next);
+  refreshWorkflowDocsLinkedMarks();
+  refreshWorkflowUnassignedButton();
+  bindWorkflowTasksInteractions();
+  bindWorkflowDocDrag();
+  bindWorkflowDependencyRedraw();
+  applyWorkflowTaskHighlight();
+}
+
+function focusWorkflowTaskFromDoc(docId) {
+  const path = getActiveWorkflowPath();
+  if (!path) return;
+  const task = findWorkflowTaskByDocId(path, docId);
+  if (!task) {
+    showTypeToast("Brak powiązanego zadania w tej ścieżce");
+    return;
+  }
+  if (isProjectWorkflowRuntime()) {
+    const viewMode = getTasksViewMode();
+    if (viewMode === "cards" || viewMode === "table") {
+      const projectId = workflowRuntime.projectId;
+      const map = loadTaskExpandState(projectId);
+      const byId = new Map((path.tasks || []).map((item) => [item.id, item]));
+      let current = task.parentId || null;
+      while (current) {
+        map[current] = true;
+        current = byId.get(current)?.parentId || null;
+      }
+      saveTaskExpandState(projectId, map);
+      workflowHighlightTaskId = task.id;
+      softRefreshWorkflowTasks();
+      return;
+    }
+  }
+  expandWorkflowTaskAncestors(path.id, task.id, path.tasks || []);
+  workflowHighlightTaskId = task.id;
+  softRefreshWorkflowTasks();
+}
+
+function bindWorkflowDependencyRedraw() {
+  const canvas = content.querySelector('[data-role="workflow-task-canvas"]');
+  if (!canvas) return;
+  const redraw = () => drawWorkflowDependencyLinks();
+  requestAnimationFrame(() => requestAnimationFrame(redraw));
+  if (typeof ResizeObserver !== "undefined") {
+    canvas._workflowResizeObserver?.disconnect?.();
+    const observer = new ResizeObserver(redraw);
+    observer.observe(canvas);
+    canvas._workflowResizeObserver = observer;
+  }
+  canvas.addEventListener("scroll", redraw, { passive: true });
+}
+
+function applyWorkflowTaskHighlight() {
+  if (!workflowHighlightTaskId) return;
+  const id = String(workflowHighlightTaskId).replace(/"/g, "");
+  const item =
+    content.querySelector(`.workflow-task-item[data-task-id="${id}"]`) ||
+    content.querySelector(`.task-tree-row[data-task-id="${id}"]`);
+  if (!item) {
+    workflowHighlightTaskId = null;
+    return;
+  }
+  item.classList.add("is-highlighted");
+  item.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  window.setTimeout(() => {
+    if (workflowHighlightTaskId === item.dataset.taskId) {
+      workflowHighlightTaskId = null;
+      item.classList.remove("is-highlighted");
+    }
+  }, 2600);
+}
+
+function clearWorkflowDropMarkers(list) {
+  list?.querySelectorAll(".workflow-task-item").forEach((item) => {
+    item.classList.remove("drop-before", "drop-after", "drop-nest", "drop-link-doc", "drop-link-blocked");
+  });
+}
+
+/** @type {{ docId: string, sourceTaskId: string | null } | null} */
+let workflowDocDragState = null;
+
+function bindWorkflowDocDrag() {
+  const docsPanel = content.querySelector('[data-role="workflow-documents"]');
+  const docsDrop = content.querySelector('[data-role="workflow-docs-drop"]');
+  const list = content.querySelector('[data-role="workflow-task-list"]');
+
+  content.querySelectorAll('[data-role="workflow-doc-item"]').forEach((item) => {
+    item.addEventListener("dragstart", (event) => {
+      if (event.target.closest('[data-role="workflow-locate-task"]')) {
+        event.preventDefault();
+        return;
+      }
+      const docId = item.dataset.docId;
+      if (!docId) {
+        event.preventDefault();
+        return;
+      }
+      workflowDocDragState = { docId, sourceTaskId: null };
+      item.classList.add("is-dragging-doc");
+      docsPanel?.classList.add("is-dragging-doc-from-list");
+      event.dataTransfer.effectAllowed = "copyMove";
+      event.dataTransfer.setData("text/workflow-doc", docId);
+      event.dataTransfer.setData("text/plain", docId);
+    });
+    item.addEventListener("dragend", () => {
+      workflowDocDragState = null;
+      item.classList.remove("is-dragging-doc");
+      docsPanel?.classList.remove("is-dragging-doc-from-list");
+      clearWorkflowDropMarkers(list);
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-task-doc"]').forEach((chip) => {
+    chip.addEventListener("dragstart", (event) => {
+      event.stopPropagation();
+      const docId = chip.dataset.docId;
+      const taskId = chip.dataset.taskId;
+      if (!docId || !taskId) {
+        event.preventDefault();
+        return;
+      }
+      workflowDocDragState = { docId, sourceTaskId: taskId };
+      chip.classList.add("is-dragging-doc");
+      list?.classList.add("is-dragging-doc-chip");
+      docsPanel?.classList.add("is-doc-unlink-target");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/workflow-doc", docId);
+      event.dataTransfer.setData("text/workflow-doc-source-task", taskId);
+      event.dataTransfer.setData("text/plain", docId);
+    });
+    chip.addEventListener("dragend", () => {
+      workflowDocDragState = null;
+      chip.classList.remove("is-dragging-doc");
+      list?.classList.remove("is-dragging-doc-chip");
+      docsPanel?.classList.remove("is-doc-unlink-target", "is-doc-unlink-hover");
+      clearWorkflowDropMarkers(list);
+    });
+  });
+
+  if (docsDrop) {
+    docsDrop.addEventListener("dragover", (event) => {
+      if (!workflowDocDragState?.sourceTaskId) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      docsPanel?.classList.add("is-doc-unlink-hover");
+    });
+    docsDrop.addEventListener("dragleave", (event) => {
+      if (!docsDrop.contains(event.relatedTarget)) {
+        docsPanel?.classList.remove("is-doc-unlink-hover");
+      }
+    });
+    docsDrop.addEventListener("drop", (event) => {
+      event.preventDefault();
+      docsPanel?.classList.remove("is-doc-unlink-hover", "is-doc-unlink-target");
+      const sourceTaskId =
+        event.dataTransfer.getData("text/workflow-doc-source-task") ||
+        workflowDocDragState?.sourceTaskId ||
+        "";
+      if (!sourceTaskId) return;
+      linkWorkflowTaskDocument(sourceTaskId, null);
+      workflowDocDragState = null;
+      showTypeToast("Odpięto dokument od zadania");
+      softRefreshWorkflowTasks();
+    });
+  }
+}
+
+function bindWorkflowTaskDrag() {
+  const list = content.querySelector('[data-role="workflow-task-list"]');
+  if (!list) return;
+
+  let dragTaskId = null;
+
+  list.querySelectorAll(".workflow-task-item").forEach((item) => {
+    item.addEventListener("dragstart", (event) => {
+      if (event.target.closest('[data-role="workflow-task-doc"]')) {
+        return;
+      }
+      const interactive = event.target.closest(
+        "button, a, input, textarea, select, label, .workflow-task-action"
+      );
+      if (interactive && !interactive.matches('[data-role="workflow-drag-handle"]')) {
+        event.preventDefault();
+        return;
+      }
+      dragTaskId = item.dataset.taskId || null;
+      if (!dragTaskId) {
+        event.preventDefault();
+        return;
+      }
+      item.classList.add("is-dragging");
+      list.classList.add("is-dragging-tasks");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/workflow-task", dragTaskId);
+      event.dataTransfer.setData("text/plain", dragTaskId);
+    });
+
+    item.addEventListener("dragend", () => {
+      dragTaskId = null;
+      item.classList.remove("is-dragging");
+      list.classList.remove("is-dragging-tasks");
+      clearWorkflowDropMarkers(list);
+      requestAnimationFrame(() => drawWorkflowDependencyLinks());
+    });
+
+    item.addEventListener("dragover", (event) => {
+      if (workflowDocDragState && !list.classList.contains("is-dragging-tasks")) {
+        event.preventDefault();
+        clearWorkflowDropMarkers(list);
+        const targetId = item.dataset.taskId;
+        const docId = workflowDocDragState.docId;
+        if (workflowDocDragState.sourceTaskId && workflowDocDragState.sourceTaskId === targetId) {
+          event.dataTransfer.dropEffect = "none";
+          return;
+        }
+        if (!canAssignWorkflowDocToTask(targetId, docId)) {
+          item.classList.add("drop-link-blocked");
+          event.dataTransfer.dropEffect = "none";
+          return;
+        }
+        item.classList.add("drop-link-doc");
+        event.dataTransfer.dropEffect = workflowDocDragState.sourceTaskId ? "move" : "copy";
+        return;
+      }
+
+      if (!dragTaskId || dragTaskId === item.dataset.taskId) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+
+      const path = getActiveWorkflowPath();
+      if (path && isWorkflowDescendant(path.tasks || [], dragTaskId, item.dataset.taskId)) {
+        clearWorkflowDropMarkers(list);
+        return;
+      }
+
+      const card = item.querySelector(".workflow-task-card");
+      const rect = (card || item).getBoundingClientRect();
+      const ratio = (event.clientY - rect.top) / Math.max(1, rect.height);
+      clearWorkflowDropMarkers(list);
+
+      if (ratio < 0.28) {
+        item.classList.add("drop-before");
+      } else if (ratio > 0.72) {
+        item.classList.add("drop-after");
+      } else {
+        item.classList.add("drop-nest");
+        if (path?.id && item.dataset.taskId) {
+          setWorkflowTaskExpanded(path.id, item.dataset.taskId, true);
+          applyWorkflowCollapseVisibility();
+        }
+      }
+    });
+
+    item.addEventListener("dragleave", (event) => {
+      if (!item.contains(event.relatedTarget)) {
+        item.classList.remove(
+          "drop-before",
+          "drop-after",
+          "drop-nest",
+          "drop-link-doc",
+          "drop-link-blocked"
+        );
+      }
+    });
+
+    item.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const docId =
+        event.dataTransfer.getData("text/workflow-doc") || workflowDocDragState?.docId || "";
+      const sourceTaskId =
+        event.dataTransfer.getData("text/workflow-doc-source-task") ||
+        workflowDocDragState?.sourceTaskId ||
+        "";
+      const targetId = item.dataset.taskId;
+
+      if (docId && targetId) {
+        clearWorkflowDropMarkers(list);
+        if (sourceTaskId && sourceTaskId === targetId) return;
+        if (!canAssignWorkflowDocToTask(targetId, docId)) {
+          showTypeToast("To zadanie ma już powiązany dokument");
+          return;
+        }
+        linkWorkflowTaskDocument(targetId, docId);
+        workflowDocDragState = null;
+        showTypeToast(
+          sourceTaskId ? "Przepięto dokument na inne zadanie" : "Powiązano dokument z zadaniem"
+        );
+        softRefreshWorkflowTasks();
+        return;
+      }
+
+      const sourceId =
+        dragTaskId ||
+        event.dataTransfer.getData("text/workflow-task") ||
+        event.dataTransfer.getData("text/plain");
+      const mode = item.classList.contains("drop-nest")
+        ? "nest"
+        : item.classList.contains("drop-after")
+          ? "after"
+          : "before";
+      clearWorkflowDropMarkers(list);
+      list.classList.remove("is-dragging-tasks");
+      if (!sourceId || !targetId || sourceId === targetId) return;
+
+      const moved = moveWorkflowTask(sourceId, { mode, targetId });
+      if (!moved) {
+        if (!moveWorkflowTask.lastError) {
+          showTypeToast("Nie można przenieść zadania w to miejsce");
+        }
+        return;
+      }
+      showTypeToast(
+        mode === "nest" ? "Ustawiono jako podzadanie" : "Zmieniono kolejność zadań"
+      );
+      softRefreshWorkflowTasks();
+    });
+  });
+}
+
+function bindWorkflowTasksInteractions() {
+  content.querySelector('[data-role="workflow-add-task"]')?.addEventListener("click", () => {
+    if (!getActiveWorkflowPath()) {
+      showTypeToast("Najpierw wybierz ścieżkę");
+      return;
+    }
+    openWorkflowNameModal({
+      title: "Nowe zadanie",
+      eyebrow: getActiveWorkflowPath()?.name || "Workflow",
+      placeholder: "np. Wytworzenie projektu budowlanego",
+      onSave: (name) => {
+        const task = createWorkflowTask(name, null);
+        if (!task) return;
+        showTypeToast(`Dodano zadanie: ${task.name}`);
+        softRefreshWorkflowTasks();
+      },
+    });
+  });
+
+  content.querySelector('[data-role="workflow-collapse-all"]')?.addEventListener("click", () => {
+    const active = getActiveWorkflowPath();
+    if (!active) return;
+    collapseAllWorkflowTasks(active.id, active.tasks || []);
+    applyWorkflowCollapseVisibility();
+    showTypeToast("Zwinięto do najwyższego poziomu");
+  });
+
+  content.querySelectorAll('[data-role="workflow-toggle-task"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const active = getActiveWorkflowPath();
+      const taskId = btn.dataset.taskId;
+      if (!active || !taskId) return;
+      const next = !isWorkflowTaskExpanded(active.id, taskId);
+      setWorkflowTaskExpanded(active.id, taskId, next);
+      applyWorkflowCollapseVisibility();
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-remove-dep"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fromId = btn.dataset.from;
+      const toId = btn.dataset.to;
+      if (!fromId || !toId) return;
+      removeWorkflowDependency(fromId, toId);
+      showTypeToast("Usunięto powiązanie");
+      softRefreshWorkflowTasks();
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-auto-name-from-doc"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const taskId = btn.dataset.taskId;
+      if (!taskId) return;
+      const updated = renameWorkflowTaskFromLinkedDocument(taskId);
+      if (!updated) return;
+      const task = updated.tasks?.find((item) => item.id === taskId);
+      showTypeToast(task ? `Nazwa: ${task.name}` : "Zaktualizowano nazwę");
+      softRefreshWorkflowTasks();
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-edit-task"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const taskId = btn.dataset.taskId;
+      const task = getActiveWorkflowPath()?.tasks?.find((item) => item.id === taskId);
+      if (!task) return;
+      openWorkflowNameModal({
+        title: "Edytuj zadanie",
+        eyebrow: getActiveWorkflowPath()?.name || "Workflow",
+        fieldLabel: "Nazwa zadania",
+        placeholder: task.name,
+        onSave: (name) => {
+          renameWorkflowTask(taskId, name);
+          showTypeToast("Zaktualizowano nazwę");
+          softRefreshWorkflowTasks();
+        },
+      });
+      const input = document.querySelector("#workflowModalName");
+      if (input) input.value = task.name;
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-delete-task"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const taskId = btn.dataset.taskId;
+      if (workflowRuntime.mode === "project" && workflowRuntime.projectId) {
+        if (!confirmAndDeleteProjectTask(workflowRuntime.projectId, taskId)) return;
+        softRefreshWorkflowTasks();
+        return;
+      }
+      const task = getActiveWorkflowPath()?.tasks?.find((item) => item.id === taskId);
+      if (!task) return;
+      const hasKids =
+        (getWorkflowChildIds(getActiveWorkflowPath()?.tasks || []).get(taskId) || []).length > 0;
+      const ok = window.confirm(
+        `Usunąć zadanie „${task.name}”${hasKids ? " wraz z podzadaniami" : ""}?`
+      );
+      if (!ok) return;
+      deleteWorkflowTask(taskId);
+      showTypeToast("Usunięto zadanie");
+      softRefreshWorkflowTasks();
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-duration"]').forEach((input) => {
+    const commit = () => {
+      const taskId = input.dataset.taskId;
+      if (!taskId) return;
+      setWorkflowTaskDuration(taskId, input.value);
+      softRefreshWorkflowTasks();
+    };
+    input.addEventListener("change", commit);
+  });
+
+  content.querySelectorAll('[data-role="workflow-start-date"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      const taskId = input.dataset.taskId;
+      if (!taskId) return;
+      setWorkflowTaskStartDate(taskId, input.value || null);
+      softRefreshWorkflowTasks();
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-add-child"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const parentId = btn.dataset.taskId;
+      const active = getActiveWorkflowPath();
+      const parent = active?.tasks?.find((task) => task.id === parentId);
+      if (active && parentId) {
+        setWorkflowTaskExpanded(active.id, parentId, true);
+      }
+      openWorkflowNameModal({
+        title: "Podzadanie",
+        eyebrow: parent?.name || active?.name || "Workflow",
+        placeholder: "np. Korekty dokumentacji",
+        onSave: (name) => {
+          const task = createWorkflowTask(name, parentId);
+          if (!task) return;
+          showTypeToast(`Dodano podzadanie: ${task.name}`);
+          softRefreshWorkflowTasks();
+        },
+      });
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-set-blocks"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const taskId = btn.dataset.taskId;
+      const active = getActiveWorkflowPath();
+      const task = active?.tasks?.find((item) => item.id === taskId);
+      if (!task) return;
+      openWorkflowTaskPickerModal({
+        title: "Wymaga wykonania",
+        lead: `Wybierz zadania z tej ścieżki, które muszą być wykonane, zanim ruszy „${task.name}”.`,
+        taskId,
+        selectedIds: task.blockedBy || [],
+        onSave: (ids) => {
+          setWorkflowTaskDependencies(taskId, ids, "blockedBy");
+          showTypeToast("Zapisano: wymaga wykonania");
+          softRefreshWorkflowTasks();
+        },
+      });
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-link-doc"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      openWorkflowDocPickerModal(btn.dataset.taskId);
+    });
+  });
+
+  bindWorkflowTaskDrag();
+}
+
+function bindWorkflowUnassignedDocsAction() {
+  content.querySelector('[data-role="workflow-create-unassigned"]')?.addEventListener("click", () => {
+    if (!getActiveWorkflowPath()) {
+      showTypeToast("Najpierw wybierz ścieżkę");
+      return;
+    }
+    const count = createWorkflowTasksForUnassignedDocuments();
+    if (!count) {
+      showTypeToast("Brak nieprzypisanych dokumentów");
+      return;
+    }
+    showTypeToast(
+      count === 1
+        ? "Utworzono 1 zadanie Produkcja dla dokumentu"
+        : `Utworzono ${count} zadań Produkcja dla dokumentów`
+    );
+    softRefreshWorkflowTasks();
+  });
+}
+
+function bindWorkflowView() {
+  setWorkflowRuntime({ mode: "global" });
+  content.querySelector('[data-role="workflow-add-path"]')?.addEventListener("click", () => {
+    openWorkflowPathCreateModal();
+  });
+
+  content.querySelectorAll('[data-role="workflow-select-path"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const pathId = btn.dataset.pathId;
+      if (!pathId) return;
+      setActiveWorkflowPathId(pathId);
+      renderView("workflow");
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-locate-task"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      focusWorkflowTaskFromDoc(btn.dataset.docId);
+    });
+  });
+
+  content.querySelectorAll('[data-role="workflow-docs-toggle"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const layout = content.querySelector('[data-role="workflow-layout"]');
+      const docsPanel = content.querySelector('[data-role="workflow-documents"]');
+      const reopen = content.querySelector(".workflow-docs-reopen");
+      const next = !isWorkflowDocsCollapsed();
+      setWorkflowDocsCollapsed(next);
+      layout?.classList.toggle("is-docs-collapsed", next);
+      if (docsPanel) docsPanel.hidden = next;
+      if (reopen) reopen.hidden = !next;
+      requestAnimationFrame(() => drawWorkflowDependencyLinks());
+    });
+  });
+
+  bindWorkflowUnassignedDocsAction();
+  bindWorkflowTasksInteractions();
+  bindWorkflowDocDrag();
+  bindWorkflowDependencyRedraw();
+  applyWorkflowTaskHighlight();
+}
+
+function bindProjectFlowView(projectId) {
+  setWorkflowRuntime({ mode: "project", projectId });
+  content.querySelectorAll('[data-role="workflow-locate-task"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      focusWorkflowTaskFromDoc(btn.dataset.docId);
+    });
+  });
+  content.querySelectorAll('[data-role="workflow-docs-toggle"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const layout = content.querySelector('[data-role="workflow-layout"]');
+      const docsPanel = content.querySelector('[data-role="workflow-documents"]');
+      const reopen = content.querySelector(".workflow-docs-reopen");
+      const next = !isWorkflowDocsCollapsed();
+      setWorkflowDocsCollapsed(next);
+      layout?.classList.toggle("is-docs-collapsed", next);
+      if (docsPanel) docsPanel.hidden = next;
+      if (reopen) reopen.hidden = !next;
+      requestAnimationFrame(() => drawWorkflowDependencyLinks());
+    });
+  });
+  if (content.querySelector('[data-role="workflow-layout"]')) {
+    bindWorkflowUnassignedDocsAction();
+    bindWorkflowTasksInteractions();
+    bindWorkflowDocDrag();
+    bindWorkflowDependencyRedraw();
+    applyWorkflowTaskHighlight();
+  }
+}
+
+function openProjectFlowGenerateModal(projectId) {
+  const project = getProjectById(projectId);
+  if (!project) return;
+  let paths = [];
+  try {
+    const raw = localStorage.getItem(WORKFLOW_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    paths = Array.isArray(parsed?.paths)
+      ? parsed.paths
+          .map((item, index) => normalizeWorkflowPath(item, index))
+          .filter((item) => item.id)
+      : [];
+  } catch {
+    paths = [];
+  }
+  const modal = ensureWorkflowModal();
+  const seedCount = (project.formalSurvey?.documents || []).length;
+  modal.innerHTML = `
+    <div class="category-modal-backdrop" data-role="close-workflow-modal"></div>
+    <div class="category-modal-dialog workflow-picker-dialog" role="dialog" aria-modal="true" aria-labelledby="workflowModalTitle">
+      <header class="category-modal-head">
+        <div>
+          <p class="eyebrow">${escapeHtml(project.title)}</p>
+          <h2 id="workflowModalTitle">Generuj Flow</h2>
+          <p class="workflow-modal-lead">
+            ${
+              seedCount
+                ? `Źródło: Projekt budowlany + ankieta (${seedCount} dok.).`
+                : "Źródło: Projekt budowlany (brak ankiety)."
+            }
+            Ponowne generowanie scala z istniejącymi zadaniami Flow.
+          </p>
+        </div>
+        <button type="button" class="icon-btn modal-close" data-role="close-workflow-modal" aria-label="Zamknij">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
+        </button>
+      </header>
+      <div class="category-modal-body">
+        ${
+          paths.length
+            ? `<ul class="workflow-picker-list">
+                ${paths
+                  .map(
+                    (path, index) => `
+                  <li>
+                    <label class="workflow-picker-option">
+                      <input type="radio" name="project-flow-path" value="${escapeHtml(
+                        path.id
+                      )}" ${index === 0 ? "checked" : ""} />
+                      <span>${escapeHtml(path.name)}
+                        <em class="workflow-picker-note">${
+                          (path.tasks || []).length
+                        } zadań we wzorcu</em>
+                      </span>
+                    </label>
+                  </li>`
+                  )
+                  .join("")}
+              </ul>`
+            : `<p class="workflow-paths-empty">Brak ścieżek we wzorcu Workflow — najpierw zdefiniuj flow w zakładce Workflow.</p>`
+        }
+      </div>
+      <footer class="category-modal-foot">
+        <button type="button" class="ghost-btn" data-role="close-workflow-modal">Anuluj</button>
+        <button type="button" class="primary-btn" data-role="save-workflow-modal" ${
+          paths.length ? "" : "disabled"
+        }>Generuj</button>
+      </footer>
+    </div>
+  `;
+
+  const save = () => {
+    const pathId = modal.querySelector('input[name="project-flow-path"]:checked')?.value;
+    const templatePath = paths.find((item) => item.id === pathId);
+    if (!templatePath || typeof applyWorkflowPathToProject !== "function") return;
+    const result = applyWorkflowPathToProject(project, templatePath);
+    const withDates = projectFlowHasRootStart(result.project?.flowInstance?.tasks)
+      ? applyFlowScheduleDatesToProject(result.project)
+      : result.project;
+    persistProject(withDates);
+    closeWorkflowModal();
+    setTasksViewMode("flow");
+    showTypeToast(
+      result.addedTasks > 0
+        ? `Flow scalony — dodano ${result.addedTasks} zadań`
+        : "Flow scalony — bez nowych zadań"
+    );
+    renderView("project-detail", projectOverviewNav(projectId, { listTab: "tasks" }));
+  };
+
+  modal.querySelectorAll('[data-role="close-workflow-modal"]').forEach((el) => {
+    el.addEventListener("click", closeWorkflowModal);
+  });
+  modal.querySelector('[data-role="save-workflow-modal"]')?.addEventListener("click", save);
+  modal.hidden = false;
+}
+
 function readConfigFromDom() {
   const statusRows = [...content.querySelectorAll('[data-role="status-list"] .config-row')];
   const typeRows = [...content.querySelectorAll('[data-role="type-list"] .config-row')];
   const statuses = statusRows.map((row, index) => ({
     id: row.dataset.statusId || `status-${index + 1}`,
     label: row.querySelector('[data-role="status-label"]')?.value.trim() || `Status ${index + 1}`,
+    color: normalizeStatusColor(
+      row.querySelector('[data-role="status-color"]')?.value || row.dataset.statusColor,
+      defaultStatusColorForIndex(index)
+    ),
     order: index,
     autoCompleteAt100: Boolean(row.querySelector('[data-role="status-auto-100"]')?.checked),
   }));
@@ -9762,6 +16850,7 @@ function bindConfigurationView() {
     config.statuses.push({
       id: `status-${Date.now()}`,
       label: `Nowy status ${config.statuses.length + 1}`,
+      color: defaultStatusColorForIndex(config.statuses.length),
       order: config.statuses.length,
       autoCompleteAt100: false,
     });
@@ -9977,16 +17066,7 @@ function renderView(view, options = {}) {
       return;
     }
     const panel = options.panel || "overview";
-    pageTitle.textContent =
-      panel === "building-form"
-        ? `${project.title} · Projekt budowlany`
-        : panel === "formal-survey"
-          ? `${project.title} · Ankieta formalna`
-          : panel === "doc-form"
-            ? `${project.title} · Dokument`
-            : panel === "kpa"
-              ? `${project.title} · KPA`
-              : project.title;
+    pageTitle.textContent = projectDetailPageTitle(project, panel, options);
     if (panel === "formal-survey") initSurveyDraft(project);
     content.innerHTML = `
       ${
@@ -10001,11 +17081,12 @@ function renderView(view, options = {}) {
       }
       ${
         options.justSavedSurvey
-          ? `<p class="save-toast">Ankieta zapisana — nowe zadania są na liście w projekcie.</p>`
+          ? `<p class="save-toast">Ankieta zapisana — dokumenty są na liście. Wygeneruj Flow, aby dodać zadania.</p>`
           : ""
       }
       ${projectDetailHtml(project, panel, {
         focusDocId: options.focusDocId || null,
+        focusTaskId: options.focusTaskId || null,
         listTab: options.listTab || getProjectListTab(),
       })}
     `;
@@ -10019,6 +17100,21 @@ function renderView(view, options = {}) {
       btn.addEventListener("click", () => openProjectForEdit(btn.dataset.projectId));
     });
     bindProjectDetailActions(project.id);
+    if (
+      (getTasksViewMode() === "flow" ||
+        getTasksViewMode() === "cards" ||
+        getTasksViewMode() === "table") &&
+      (options.listTab || getProjectListTab()) === "tasks" &&
+      (!options.panel || options.panel === "overview")
+    ) {
+      if (getTasksViewMode() === "flow") {
+        bindProjectFlowView(project.id);
+      } else {
+        setWorkflowRuntime({ mode: "project", projectId: project.id });
+      }
+    } else {
+      setWorkflowRuntime({ mode: "global" });
+    }
     if (panel === "building-form") bindBuildingForm(project.id);
     if (panel === "formal-survey") bindFormalSurvey(project.id);
     if (panel === "kpa") bindKpaPanel(project.id);
@@ -10026,7 +17122,19 @@ function renderView(view, options = {}) {
       bindProjectDocForms(project.id);
       bindDocumentPdfDownloads();
     }
-    if (panel !== "formal-survey" && panel !== "doc-form" && panel !== "kpa") bindAiChat();
+    if (panel === "task-detail") {
+      bindTaskDescriptionEditors(project.id);
+      bindContextFlowWidget();
+    }
+    if (
+      panel !== "formal-survey" &&
+      panel !== "doc-form" &&
+      panel !== "kpa" &&
+      panel !== "task-detail" &&
+      panel !== "building-form"
+    ) {
+      bindAiChat();
+    }
     if (options.focusDocId && panel === "overview") {
       const target = content.querySelector(
         `details.doc-form-item[data-doc-id="${options.focusDocId}"]`
@@ -10050,6 +17158,9 @@ function renderView(view, options = {}) {
   } else if (view === "configuration") {
     content.innerHTML = configurationViewHtml();
     bindConfigurationView();
+  } else if (view === "workflow") {
+    content.innerHTML = workflowViewHtml();
+    bindWorkflowView();
   } else {
     content.innerHTML = `
       <section class="placeholder-view">
@@ -10102,17 +17213,62 @@ function closeMenu() {
 
 document.querySelectorAll(".nav-item").forEach((item) => {
   item.addEventListener("click", (event) => {
-    event.preventDefault();
     if (item.classList.contains("is-disabled") || item.getAttribute("aria-disabled") === "true") {
+      event.preventDefault();
       return;
     }
-    renderView(item.dataset.view);
+    const view = item.dataset.view;
+    if (getUiVersion() === "v2") {
+      if (view === "dashboard") {
+        event.preventDefault();
+        window.dispatchEvent(new CustomEvent("snappoint:v2-home"));
+        return;
+      }
+      if (view === "workflow") {
+        event.preventDefault();
+        window.dispatchEvent(new CustomEvent("snappoint:v2-workflow"));
+        return;
+      }
+      if (view === "configuration") {
+        if (typeof window.snappointV2GoConfiguration === "function") {
+          event.preventDefault();
+          try {
+            window.snappointV2GoConfiguration("statuses");
+          } catch (err) {
+            console.error("[v2] open configuration", err);
+            if (typeof showTypeToast === "function") {
+              showTypeToast("Nie udało się otworzyć konfiguracji");
+            }
+          }
+          return;
+        }
+        // Brak API V2 — pozwól na pełne przejście ?v2=configuration
+        return;
+      }
+      if (item.dataset.soon === "1" || item.classList.contains("is-soon")) {
+        event.preventDefault();
+        if (typeof showTypeToast === "function") {
+          showTypeToast("W przygotowaniu");
+        } else {
+          window.alert("W przygotowaniu");
+        }
+        return;
+      }
+      event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    renderView(view);
   });
 });
 
 document.querySelectorAll(".brand-mark").forEach((brand) => {
   brand.addEventListener("click", (event) => {
     event.preventDefault();
+    if (getUiVersion() === "v2") {
+      window.dispatchEvent(new CustomEvent("snappoint:v2-home"));
+      return;
+    }
     renderView("dashboard");
   });
 });
@@ -10142,6 +17298,13 @@ document.getElementById("aiChatFab")?.addEventListener("click", () => {
   setAiChatMinimized(false);
 });
 
+document.querySelector('[data-role="topbar-ai-btn"]')?.addEventListener("click", (event) => {
+  // New (V2): obsługuje listener w v2/app.js
+  if (typeof getUiVersion === "function" && getUiVersion() === "v2") return;
+  event.preventDefault();
+  setAiChatMinimized(false);
+});
+
 menuToggle?.addEventListener("click", () => {
   if (isMobileNav()) {
     if (sidebar.classList.contains("is-open")) closeMenu();
@@ -10162,6 +17325,14 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     if (!document.getElementById("unsavedChangesModal")?.hidden) {
       closeUnsavedChangesModal();
+      return;
+    }
+    if (document.querySelector('[data-role="ui-gen-switch"]')?.classList.contains("is-open")) {
+      closeUiGenMenu();
+      return;
+    }
+    if (document.querySelector('[data-role="ui-version-switch"]')?.classList.contains("is-open")) {
+      closeUiVersionMenu();
       return;
     }
     if (document.querySelector('[data-role="theme-menu"]')?.classList.contains("is-open")) {
@@ -10200,6 +17371,258 @@ document.addEventListener("keydown", (event) => {
 });
 
 const THEME_STORAGE_KEY = "snappoint.theme";
+const UI_VERSION_STORAGE_KEY = "snappoint.uiVersion";
+// New = silnik V2. Kolorystyka New: V2 (bazowa) + V3/V4/V5 (data-ui-skin).
+// Old = wyłącznie stary system V1.
+const UI_SKIN_STORAGE_KEY = "snappoint.uiSkin";
+const UI_SKINS = ["v3", "v4", "v5"];
+const UI_COLOR_IDS = ["v2", "v3", "v4", "v5"];
+
+function getUiVersion() {
+  try {
+    return localStorage.getItem(UI_VERSION_STORAGE_KEY) === "v2" ? "v2" : "v1";
+  } catch {
+    return "v1";
+  }
+}
+
+function getUiGeneration() {
+  return getUiVersion() === "v2" ? "new" : "old";
+}
+
+/** Aktywna kolorystyka New: v2 | v3 | v4 | v5 (null w Old). */
+function getUiColorId() {
+  try {
+    if (getUiVersion() !== "v2") return null;
+    const skin = localStorage.getItem(UI_SKIN_STORAGE_KEY);
+    if (UI_SKINS.includes(skin)) return skin;
+    return "v2";
+  } catch {
+    return "v2";
+  }
+}
+
+function getUiSkin() {
+  const color = getUiColorId();
+  return UI_SKINS.includes(color) ? color : null;
+}
+
+function syncUiChrome() {
+  const gen = getUiGeneration();
+  const isNew = gen === "new";
+  const colorId = getUiColorId() || "v2";
+
+  document.querySelectorAll('[data-role="ui-gen"]').forEach((btn) => {
+    const active = btn.dataset.uiGen === gen;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-checked", active ? "true" : "false");
+  });
+  const genLabel = document.querySelector('[data-role="ui-gen-label"]');
+  if (genLabel) genLabel.textContent = isNew ? "New" : "Old";
+
+  const colorSwitch = document.querySelector('[data-role="ui-version-switch"]');
+  if (colorSwitch) colorSwitch.hidden = !isNew;
+
+  document.querySelectorAll('[data-role="ui-version"]').forEach((btn) => {
+    const active = isNew && btn.dataset.uiVersion === colorId;
+    btn.classList.toggle("is-active", active);
+    btn.setAttribute("aria-checked", active ? "true" : "false");
+  });
+  const versionLabel = document.querySelector('[data-role="ui-version-label"]');
+  if (versionLabel) versionLabel.textContent = String(colorId).toUpperCase();
+}
+
+function applyUiVersion(version) {
+  let next;
+  let colorId = null;
+
+  if (version === "v1" || version === "old") {
+    next = "v1";
+  } else if (UI_COLOR_IDS.includes(version) || version === "new") {
+    next = "v2";
+    if (version === "new") {
+      try {
+        const saved = localStorage.getItem(UI_SKIN_STORAGE_KEY);
+        colorId = UI_COLOR_IDS.includes(saved) ? saved : "v2";
+      } catch {
+        colorId = "v2";
+      }
+    } else {
+      colorId = version;
+    }
+  } else {
+    next = "v1";
+  }
+
+  const skin = UI_SKINS.includes(colorId) ? colorId : null;
+  document.documentElement.setAttribute("data-ui-version", next);
+  if (skin) document.documentElement.setAttribute("data-ui-skin", skin);
+  else document.documentElement.removeAttribute("data-ui-skin");
+
+  try {
+    localStorage.setItem(UI_VERSION_STORAGE_KEY, next);
+    // Zachowaj ostatnią kolorystykę New także przy Old — wraca po przełączeniu
+    if (colorId) localStorage.setItem(UI_SKIN_STORAGE_KEY, colorId);
+  } catch {
+    /* ignore */
+  }
+
+  // Paleta „Kolorystyka” tylko w Old; New ma wyłącznie V2–V5
+  try {
+    if (next === "v2") {
+      document.documentElement.removeAttribute("data-theme");
+    } else {
+      applyTheme(localStorage.getItem(THEME_STORAGE_KEY) || "snappoint");
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const v2Shell = document.querySelector('[data-role="v2-shell"]');
+  if (v2Shell) v2Shell.hidden = next !== "v2";
+
+  syncUiChrome();
+
+  // V2/New: wszystkie pozycje klikalne; niedokończone mają oznaczenie „w przygotowaniu”
+  const sidebar = document.getElementById("appSidebar");
+  if (sidebar) {
+    sidebar.querySelectorAll(".nav-item").forEach((el) => {
+      el.removeAttribute("aria-disabled");
+      el.removeAttribute("tabindex");
+    });
+    sidebar.querySelectorAll(".brand-mark").forEach((el) => {
+      el.removeAttribute("aria-disabled");
+      el.removeAttribute("tabindex");
+      if (next === "v2") {
+        el.setAttribute("aria-label", "snapPoint — lista projektów");
+      } else {
+        el.setAttribute("aria-label", "snapPoint — Pulpit");
+      }
+    });
+  }
+
+  window.dispatchEvent(
+    new CustomEvent("snappoint:ui-version", { detail: { version: next } })
+  );
+}
+
+function closeUiGenMenu() {
+  const menu = document.querySelector('[data-role="ui-gen-switch"]');
+  const toggle = menu?.querySelector('[data-role="ui-gen-toggle"]');
+  const panel = menu?.querySelector('[data-role="ui-gen-panel"]');
+  if (!menu || !toggle || !panel) return;
+  menu.classList.remove("is-open");
+  panel.hidden = true;
+  toggle.setAttribute("aria-expanded", "false");
+}
+
+function openUiGenMenu() {
+  const menu = document.querySelector('[data-role="ui-gen-switch"]');
+  const toggle = menu?.querySelector('[data-role="ui-gen-toggle"]');
+  const panel = menu?.querySelector('[data-role="ui-gen-panel"]');
+  if (!menu || !toggle || !panel) return;
+  closeUiVersionMenu();
+  closeThemeMenu();
+  menu.classList.add("is-open");
+  panel.hidden = false;
+  toggle.setAttribute("aria-expanded", "true");
+}
+
+function closeUiVersionMenu() {
+  const menu = document.querySelector('[data-role="ui-version-switch"]');
+  const toggle = menu?.querySelector('[data-role="ui-version-toggle"]');
+  const panel = menu?.querySelector('[data-role="ui-version-panel"]');
+  if (!menu || !toggle || !panel) return;
+  menu.classList.remove("is-open");
+  panel.hidden = true;
+  toggle.setAttribute("aria-expanded", "false");
+}
+
+function openUiVersionMenu() {
+  const menu = document.querySelector('[data-role="ui-version-switch"]');
+  const toggle = menu?.querySelector('[data-role="ui-version-toggle"]');
+  const panel = menu?.querySelector('[data-role="ui-version-panel"]');
+  if (!menu || !toggle || !panel || menu.hidden) return;
+  closeUiGenMenu();
+  closeThemeMenu();
+  menu.classList.add("is-open");
+  panel.hidden = false;
+  toggle.setAttribute("aria-expanded", "true");
+}
+
+function initUiGenSwitcher() {
+  const menu = document.querySelector('[data-role="ui-gen-switch"]');
+  const toggle = menu?.querySelector('[data-role="ui-gen-toggle"]');
+  if (!menu || !toggle) return;
+
+  toggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (menu.classList.contains("is-open")) closeUiGenMenu();
+    else openUiGenMenu();
+  });
+
+  menu.querySelectorAll('[data-role="ui-gen"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      applyUiVersion(btn.dataset.uiGen === "new" ? "new" : "old");
+      closeUiGenMenu();
+    });
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!menu.classList.contains("is-open")) return;
+    if (event.target.closest('[data-role="ui-gen-switch"]')) return;
+    closeUiGenMenu();
+  });
+}
+
+function initUiVersionSwitcher() {
+  const savedColor = (() => {
+    try {
+      const skin = localStorage.getItem(UI_SKIN_STORAGE_KEY);
+      if (UI_COLOR_IDS.includes(skin)) return skin;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  })();
+  if (getUiVersion() === "v2") {
+    applyUiVersion(savedColor || "v2");
+  } else {
+    applyUiVersion("v1");
+  }
+
+  initUiGenSwitcher();
+
+  const menu = document.querySelector('[data-role="ui-version-switch"]');
+  const toggle = menu?.querySelector('[data-role="ui-version-toggle"]');
+  if (!menu || !toggle) return;
+
+  toggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (menu.hidden) return;
+    if (menu.classList.contains("is-open")) closeUiVersionMenu();
+    else openUiVersionMenu();
+  });
+
+  menu.querySelectorAll('[data-role="ui-version"]').forEach((btn) => {
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      applyUiVersion(btn.dataset.uiVersion);
+      closeUiVersionMenu();
+    });
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!menu.classList.contains("is-open")) return;
+    if (event.target.closest('[data-role="ui-version-switch"]')) return;
+    closeUiVersionMenu();
+  });
+}
 
 function closeThemeMenu() {
   const menu = document.querySelector('[data-role="theme-menu"]');
@@ -10233,7 +17656,7 @@ function applyTheme(themeId) {
     "noir",
   ]);
   const id = allowed.has(themeId) ? themeId : "snappoint";
-  if (id === "snappoint") {
+  if (id === "snappoint" || document.documentElement.hasAttribute("data-ui-skin")) {
     document.documentElement.removeAttribute("data-theme");
   } else {
     document.documentElement.setAttribute("data-theme", id);
@@ -10263,7 +17686,11 @@ function initThemeSwitcher() {
     event.preventDefault();
     event.stopPropagation();
     if (menu.classList.contains("is-open")) closeThemeMenu();
-    else openThemeMenu();
+    else {
+      closeUiGenMenu();
+      closeUiVersionMenu();
+      openThemeMenu();
+    }
   });
 
   menu.querySelectorAll(".theme-menu-item[data-theme-id]").forEach((btn) => {
@@ -10288,3 +17715,4 @@ window.addEventListener("beforeunload", (event) => {
 });
 
 initThemeSwitcher();
+initUiVersionSwitcher();
