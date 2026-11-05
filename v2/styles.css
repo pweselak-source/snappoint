@@ -1,11 +1,11 @@
 /**
- * snapPoint UI V2 â€” uproszczona forma graficzna
+ * snapPoint UI V2  uproszczona forma graficzna
  *
  * Wzorzec (na razie):
- * - pÅ‚askie powierzchnie, bez blur / ciÄ™Å¼kich cieni / gradientÃ³w
- * - 1px border, maÅ‚y radius, staÅ‚e kolory
- * - mniej warstw i efektÃ³w = lÅ¼ejsze malowanie
- * - menu boczne: wyglÄ…d jak V1, nawigacja jeszcze nieaktywna
+ * - p?askie powierzchnie, bez blur / ci??kich cieni / gradientw
+ * - 1px border, ma?y radius, sta?e kolory
+ * - mniej warstw i efektw = l?ejsze malowanie
+ * - menu boczne: wygl?d jak V1, nawigacja jeszcze nieaktywna
  */
 
 html[data-ui-version="v2"] {
@@ -55,7 +55,7 @@ html[data-ui-version="v2"] .main-column {
   min-width: 0;
 }
 
-/* Topbar: pÅ‚aski, bez blur */
+/* Topbar: p?aski, bez blur */
 html[data-ui-version="v2"] .topbar {
   position: relative;
   z-index: 30;
@@ -93,7 +93,7 @@ html[data-ui-version="v2"] .sidebar .brand-mark {
   cursor: pointer;
 }
 
-/* Topbar V2: Nowy projekt / PowrÃ³t / Zapisz */
+/* Topbar V2: Nowy projekt / Powrt / Zapisz */
 .v2-topbar-btn {
   display: none;
   align-items: center;
@@ -296,7 +296,7 @@ html[data-ui-version="v2"] .v2-shell[hidden] {
   padding-bottom: 1.25rem;
 }
 
-/* â€”â€” Projekty: wyrÃ³Å¼niona sekcja + tabela Excel â€”â€” */
+/*  Projekty: wyr?niona sekcja + tabela Excel  */
 .v2-projects,
 .v2-panel {
   box-sizing: border-box;
@@ -367,7 +367,7 @@ html[data-ui-version="v2"] .v2-shell[hidden] {
   font-size: 0.9rem;
 }
 
-/* Toast V1 (zapis formularza) â€” uproszczony w V2 */
+/* Toast V1 (zapis formularza)  uproszczony w V2 */
 html[data-ui-version="v2"] .type-toast {
   border-radius: 0.4rem;
   border: 1px solid #bbf7d0;
@@ -380,7 +380,7 @@ html[data-ui-version="v2"] .type-toast.is-save-success {
   background: var(--v2-panel);
 }
 
-/* â€”â€” Toast V2 (prawy gÃ³rny rÃ³g) â€”â€” */
+/*  Toast V2 (prawy grny rg)  */
 .v2-toast {
   position: fixed;
   top: 1rem;
@@ -439,7 +439,7 @@ html[data-ui-version="v2"] .type-toast.is-save-success {
   background: #dc2626;
 }
 
-/* â€”â€” Formularz projektu: siatka 2Ã—2 â€”â€” */
+/*  Formularz projektu: siatka 22  */
 .v2-project-form {
   width: 100%;
   max-width: none;
@@ -813,7 +813,7 @@ body.v2-row-resizing * {
   font-weight: 600;
 }
 
-/* % wypeÅ‚nienia: stonowany czerwony (0) â†’ zielony (100) */
+/* % wype?nienia: stonowany czerwony (0) ? zielony (100) */
 .v2-fill-pct.is-pct-0 {
   background: #f3e4e4;
   border-color: #e2c9c9;
@@ -883,7 +883,7 @@ body.v2-row-resizing * {
   color: var(--v2-text-dim);
 }
 
-/* â€”â€” Modal typu pliku V2 â€”â€” */
+/*  Modal typu pliku V2  */
 .v2-file-modal {
   display: none;
   position: fixed;
@@ -1075,7 +1075,7 @@ body.v2-row-resizing * {
   cursor: default;
 }
 
-/* â€”â€” Modal ankiety V2 â€”â€” */
+/*  Modal ankiety V2  */
 .v2-survey-modal {
   display: none;
   position: fixed;
@@ -1433,7 +1433,7 @@ body.v2-row-resizing * {
   font-size: 0.78rem;
 }
 
-/* Workflow â€” nazwa Å›cieÅ¼ki w liÅ›cie (zwykÅ‚y tekst, bez ramki) */
+/* Workflow  nazwa ?cie?ki w li?cie (zwyk?y tekst, bez ramki) */
 .v2-wf-path-name {
   appearance: none;
   margin: 0;
@@ -1455,7 +1455,7 @@ body.v2-row-resizing * {
   background: none;
 }
 
-/* Workflow â€” dokumenty formalne (checkbox powiÄ…zaÅ„) */
+/* Workflow  dokumenty formalne (checkbox powi?za?) */
 .v2-wf-docs {
   display: flex;
   flex-direction: column;
@@ -1746,7 +1746,7 @@ body.v2-col-resizing * {
   color: #b91c1c;
 }
 
-/* â€”â€” V2 AI: FAB + pÅ‚ywajÄ…cy czat (1/4 Ã— 1/3, nad tabelÄ…) â€”â€” */
+/*  V2 AI: FAB + p?ywaj?cy czat (1/4  1/3, nad tabel?)  */
 .v2-ai-fab {
   display: none;
   position: fixed;
@@ -1787,7 +1787,7 @@ html[data-ui-version="v2"] .v2-ai-fab:not([hidden]) {
   display: none !important;
 }
 
-/* Dyskietka zapisu formularza â€” V2 */
+/* Dyskietka zapisu formularza  V2 */
 html[data-ui-version="v2"] .form-save-fab {
   display: none;
   place-items: center;
@@ -1812,7 +1812,7 @@ html[data-ui-version="v2"] .form-save-fab:hover {
   transform: none;
 }
 
-/* â€”â€” Panel pracy nad formularzem dokumentu â€”â€” */
+/*  Panel pracy nad formularzem dokumentu  */
 .v2-doc-work {
   width: 100%;
   max-width: none;
@@ -1842,7 +1842,7 @@ html[data-ui-version="v2"] .form-save-fab:hover {
   background: var(--v2-panel);
 }
 
-/* â€”â€” Zadania: eksplorator â€”â€” */
+/*  Zadania: eksplorator  */
 .v2-tasks-head {
   flex-direction: row;
   align-items: flex-end;
@@ -2052,7 +2052,7 @@ html[data-ui-version="v2"] .form-save-fab:hover {
   box-shadow: inset 0 -1px 0 #d4d4d4;
 }
 
-/* â€”â€” Zadania: Kanban â€”â€” */
+/*  Zadania: Kanban  */
 .v2-kanban {
   height: 100%;
   min-height: 18rem;
@@ -2205,7 +2205,7 @@ html[data-ui-version="v2"] .form-save-fab:hover {
   background: #737373;
 }
 
-/* â€”â€” Zadania: Gantt â€”â€” */
+/*  Zadania: Gantt  */
 .v2-gantt {
   display: flex;
   flex-direction: column;
@@ -2300,7 +2300,7 @@ html[data-ui-version="v2"] .form-save-fab:hover {
 .v2-gantt-label {
   position: sticky;
   left: 0;
-  /* Nad kaflami i Å‚Ä…cznikami przy poziomym scrollu */
+  /* Nad kaflami i ??cznikami przy poziomym scrollu */
   z-index: 10;
   display: flex;
   align-items: center;
@@ -2454,19 +2454,19 @@ html[data-ui-version="v2"] .form-save-fab:hover {
   z-index: 2;
 }
 
-/* Lvl 1: stonowany indygo (nie Å¼Ã³Å‚ty â€” zbyt podobny do lvl 2) */
+/* Lvl 1: stonowany indygo (nie ??ty  zbyt podobny do lvl 2) */
 .v2-gantt-bar.is-depth-0 {
   background: #c9c6d8;
   color: #3b3954;
 }
 
-/* Lvl 2: matowe zÅ‚oto */
+/* Lvl 2: matowe z?oto */
 .v2-gantt-bar.is-depth-1 {
   background: #e2d4a8;
   color: #5c4d28;
 }
 
-/* Lvl 3: matowy bÅ‚Ä™kit */
+/* Lvl 3: matowy b??kit */
 .v2-gantt-bar.is-depth-2 {
   background: #b4c7d8;
   color: #2f4558;
@@ -2624,7 +2624,7 @@ html[data-ui-version="v2"] .form-save-fab:hover {
   z-index: 0;
 }
 
-/* Niewidoczna warstwa hit â€” nad kaflami, tylko stroke Å‚apie pointer */
+/* Niewidoczna warstwa hit  nad kaflami, tylko stroke ?apie pointer */
 .v2-gantt-dep-svg.is-hit-layer {
   z-index: 5;
 }
@@ -2781,6 +2781,7 @@ html[data-ui-version="v2"] .form-save-fab:hover {
 }
 
 .v2-tasks-table-wrap {
+  position: relative;
   width: 100%;
   overflow: auto;
 }
@@ -3832,7 +3833,7 @@ body.v2-doc-dragging {
   background: var(--v2-hover);
 }
 
-/* Focus: lewa poÅ‚owa = tylko kolumna nazwy, aktywne zadanie na zielono */
+/* Focus: lewa po?owa = tylko kolumna nazwy, aktywne zadanie na zielono */
 body.is-v2-task-focus .v2-shell {
   right: 50vw;
 }
@@ -3866,7 +3867,7 @@ body.is-v2-task-focus .v2-task-row.is-active-task .v2-task-title-link {
   font-weight: 650;
 }
 
-/* Panel zadania â€” Notion-style, prawa poÅ‚owa ekranu (nad topbarem) */
+/* Panel zadania  Notion-style, prawa po?owa ekranu (nad topbarem) */
 .v2-task-sheet-root {
   position: fixed;
   inset: 0;
@@ -4049,14 +4050,14 @@ body.is-v2-task-focus .v2-task-row.is-active-task .v2-task-title-link {
 }
 
 .v2-task-sheet-related-summary::before {
-  content: "â–¸";
+  content: "?";
   color: var(--v2-text-dim);
   font-size: 0.7rem;
   margin-right: 0.35rem;
 }
 
 .v2-task-sheet-related-wrap[open] .v2-task-sheet-related-summary::before {
-  content: "â–¾";
+  content: "?";
 }
 
 .v2-task-sheet-related-count {
@@ -4829,7 +4830,7 @@ html[data-ui-version="v2"] .v2-doc-actions .form-save-inline-btn svg {
   height: 1.1rem;
 }
 
-/* Pola V1 (field / upload) wewnÄ…trz panelu V2 â€” jedna pod drugÄ…, typografia jak metryka */
+/* Pola V1 (field / upload) wewn?trz panelu V2  jedna pod drug?, typografia jak metryka */
 html[data-ui-version="v2"] .v2-doc-section-body .field {
   display: flex;
   flex-direction: column;
@@ -5168,7 +5169,7 @@ html[data-ui-version="v2"] .v2-ai-chat.is-closing {
   }
 }
 
-/* Noir catch-all: pozostaÅ‚e biaÅ‚e powierzchnie V2 */
+/* Noir catch-all: pozosta?e bia?e powierzchnie V2 */
 html[data-theme="noir"][data-ui-version="v2"] .v2-shell,
 html[data-theme="noir"][data-ui-version="v2"] .v2-blank,
 html[data-theme="noir"][data-ui-version="v2"] .v2-projects,
@@ -5266,7 +5267,7 @@ html[data-theme="noir"][data-ui-version="v2"] body.is-v2-task-focus .v2-tasks-ta
 }
 
 /* ==========================================================================
-   Noir V2 â€” Notion / Cursor charcoal
+   Noir V2  Notion / Cursor charcoal
    Full override of hardcoded light V2 colors.
    ========================================================================== */
 
@@ -5500,7 +5501,7 @@ html[data-theme="noir"][data-ui-version="v2"] .v2-excel td {
   border-color: var(--v2-border) !important;
 }
 
-/* Przezroczyste tory â€” SVG powiÄ…zaÅ„ jest pod wierszami (z-index: 0) */
+/* Przezroczyste tory  SVG powi?za? jest pod wierszami (z-index: 0) */
 html[data-theme="noir"][data-ui-version="v2"] .v2-gantt-row {
   background: transparent !important;
   color: var(--v2-text) !important;
@@ -5849,7 +5850,7 @@ html[data-theme="noir"][data-ui-version="v2"] .v2-task-ico.is-folder { color: #d
 html[data-theme="noir"][data-ui-version="v2"] .v2-task-ico.is-doc { color: #6b9fd4 !important; }
 html[data-theme="noir"][data-ui-version="v2"] .v2-task-ico.is-card { color: #5bbbb0 !important; }
 
-/* â€”â€”â€” Pulpit: zakÅ‚adki â€”â€”â€” */
+/*  Pulpit: zak?adki  */
 .v2-home-head {
   display: flex;
   align-items: center;
@@ -5901,7 +5902,7 @@ html[data-theme="noir"][data-ui-version="v2"] .v2-task-ico.is-card { color: #5bb
   min-width: 0;
 }
 
-/* â€”â€”â€” Konfiguracja V2 â€”â€”â€” */
+/*  Konfiguracja V2  */
 .v2-config {
   box-sizing: border-box;
   display: grid;
@@ -6175,7 +6176,7 @@ html[data-theme="noir"][data-ui-version="v2"] .v2-task-status-select.is-color-vi
   color: #c9c6d8 !important;
 }
 
-/* ——— Szczegó³y dzia³ki (metadane Geoportal mock) ——— */
+/*  Szczegy dziaki (metadane Geoportal mock)  */
 .v2-plot-detail-head {
   align-items: flex-start;
   gap: 0.85rem;
@@ -6266,7 +6267,7 @@ html[data-theme="noir"][data-ui-version="v2"] .v2-task-status-select.is-color-vi
   }
 }
 
-/* ——— Pulpit: filtry zadañ / dokumentów ——— */
+/*  Pulpit: filtry zada / dokumentw  */
 .v2-home-filters {
   display: flex;
   flex-wrap: wrap;
@@ -6344,4 +6345,175 @@ html[data-theme="noir"][data-ui-version="v2"] .v2-task-status-select.is-color-vi
   margin: 0 0 0.55rem;
   font-size: 0.8rem;
   color: var(--v2-text-muted, #6b7280);
+}
+
+/*  Zaczniki dokumentu formalnego  */
+.v2-doc-attach {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--v2-border, #e5e7eb);
+  border-radius: 0.45rem;
+  background: var(--v2-panel, #fff);
+}
+.v2-doc-attach-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+.v2-doc-attach-head h3 {
+  margin: 0 0 0.2rem;
+  font-size: 0.95rem;
+}
+.v2-doc-attach-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.v2-doc-attach-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--v2-border, #e5e7eb);
+  border-radius: 0.35rem;
+}
+.v2-doc-attach-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.875rem;
+}
+.v2-doc-attach-empty {
+  color: var(--v2-text-muted, #6b7280);
+  font-size: 0.85rem;
+  padding: 0.35rem 0;
+}
+
+.v2-task-sheet-formal-list {
+  display: grid;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+/*  Podgld PDF fullscreen  */
+.v2-pdf-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+}
+.v2-pdf-preview[hidden] {
+  display: none !important;
+}
+.v2-pdf-preview-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 12, 16, 0.72);
+}
+.v2-pdf-preview-dialog {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  width: 100%;
+  height: 100%;
+  background: #111;
+  color: #fff;
+}
+.v2-pdf-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  background: #1a1d24;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.v2-pdf-preview-head h2 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.v2-pdf-preview-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+  width: 2.2rem;
+  height: 2.2rem;
+}
+.v2-pdf-preview-frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #2a2d34;
+}
+body.is-pdf-preview-open {
+  overflow: hidden;
+}
+
+/* Lista: drag hierarchii + Gantt: drop dok. formalnego */
+.v2-task-tree-drag {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--v2-text-muted, #9ca3af);
+  width: 1.2rem;
+  height: 1.35rem;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  cursor: grab;
+  flex: 0 0 auto;
+  border-radius: 0.25rem;
+  opacity: 0.55;
+}
+.v2-task-row:hover .v2-task-tree-drag,
+.v2-task-tree-drag:focus-visible {
+  opacity: 1;
+}
+.v2-task-tree-drag:hover {
+  color: var(--v2-text, #111);
+  background: var(--v2-panel-2, #f3f4f6);
+}
+.v2-task-tree-drag:active {
+  cursor: grabbing;
+}
+.v2-task-tree-drag svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+.v2-list-insert-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--v2-accent, #0f766e);
+  z-index: 8;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(15, 118, 110, 0.25);
+}
+.v2-task-row.is-tree-dragging {
+  opacity: 0.45;
+}
+.v2-task-row.is-nest-target > td {
+  outline: 2px solid var(--v2-accent, #0f766e);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--v2-accent, #0f766e) 10%, transparent);
+}
+.v2-gantt-label .v2-task-linked-doc {
+  margin-left: 0.1rem;
+}
+.v2-gantt-track.is-drop-target .v2-gantt-bar,
+.v2-gantt-row.is-drop-target .v2-gantt-bar {
+  box-shadow: 0 0 0 2px var(--v2-accent, #0f766e);
 }

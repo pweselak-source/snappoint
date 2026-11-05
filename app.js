@@ -2779,13 +2779,22 @@ function normalizeWorkflowTask(item, index = 0) {
     typeof item?.startDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(item.startDate)
       ? item.startDate
       : null;
+  const linkedDocIds = (() => {
+    const fromArr = Array.isArray(item?.linkedDocIds)
+      ? item.linkedDocIds.map(String).filter(Boolean)
+      : [];
+    if (fromArr.length) return [...new Set(fromArr)];
+    if (item?.linkedDocId) return [String(item.linkedDocId)];
+    return [];
+  })();
   return {
     id: String(item?.id || `wft-${index + 1}`),
     name: String(item?.name || "").trim() || `Zadanie ${index + 1}`,
     parentId: item?.parentId ? String(item.parentId) : null,
     blocks: Array.isArray(item?.blocks) ? [...new Set(item.blocks.map(String))] : [],
     blockedBy: Array.isArray(item?.blockedBy) ? [...new Set(item.blockedBy.map(String))] : [],
-    linkedDocId: item?.linkedDocId ? String(item.linkedDocId) : null,
+    linkedDocIds,
+    linkedDocId: linkedDocIds[0] || null,
     sortOrder: Number.isFinite(Number(item?.sortOrder)) ? Number(item.sortOrder) : index,
     durationDays,
     startDate,
@@ -3142,7 +3151,12 @@ function getWorkflowTasksForRender(pathId, tasks) {
 }
 
 function findWorkflowTaskByDocId(path, docId) {
-  return (path?.tasks || []).find((task) => task.linkedDocId === docId) || null;
+  const did = String(docId || "");
+  return (
+    (path?.tasks || []).find((task) =>
+      normalizeTaskLinkedDocIds(task).includes(did)
+    ) || null
+  );
 }
 
 function renameWorkflowTask(taskId, name) {
@@ -3449,19 +3463,49 @@ function setWorkflowTaskDependencies(taskId, relatedIds, mode) {
   }));
 }
 
+function normalizeTaskLinkedDocIds(task) {
+  if (!task) return [];
+  if (Array.isArray(task.linkedDocIds) && task.linkedDocIds.length) {
+    return [...new Set(task.linkedDocIds.map(String).filter(Boolean))];
+  }
+  if (task.linkedDocId) return [String(task.linkedDocId)];
+  return [];
+}
+
+/** Dodaje dokument do zadania (wiele dok. → jedno zadanie). docId=null czyści wszystkie. */
 function linkWorkflowTaskDocument(taskId, docId) {
   const tid = String(taskId || "");
   const did = docId ? String(docId) : null;
   return updateActiveWorkflowPath((path) => ({
     ...path,
     tasks: (path.tasks || []).map((task) => {
+      const current = normalizeTaskLinkedDocIds(task);
       if (String(task.id) === tid) {
-        return { ...task, linkedDocId: did };
+        if (!did) {
+          return { ...task, linkedDocIds: [], linkedDocId: null };
+        }
+        const nextIds = current.includes(did) ? current : [...current, did];
+        return { ...task, linkedDocIds: nextIds, linkedDocId: nextIds[0] || null };
       }
-      if (did && String(task.linkedDocId || "") === did) {
-        return { ...task, linkedDocId: null };
+      if (did && current.includes(did)) {
+        const nextIds = current.filter((id) => id !== did);
+        return { ...task, linkedDocIds: nextIds, linkedDocId: nextIds[0] || null };
       }
       return task;
+    }),
+  }));
+}
+
+function unlinkWorkflowTaskDocument(taskId, docId) {
+  const tid = String(taskId || "");
+  const did = String(docId || "");
+  if (!tid || !did) return null;
+  return updateActiveWorkflowPath((path) => ({
+    ...path,
+    tasks: (path.tasks || []).map((task) => {
+      if (String(task.id) !== tid) return task;
+      const nextIds = normalizeTaskLinkedDocIds(task).filter((id) => id !== did);
+      return { ...task, linkedDocIds: nextIds, linkedDocId: nextIds[0] || null };
     }),
   }));
 }
@@ -3470,7 +3514,7 @@ function canAssignWorkflowDocToTask(taskId, docId) {
   const path = getActiveWorkflowPath();
   const task = path?.tasks?.find((item) => item.id === taskId);
   if (!task || !docId) return false;
-  if (task.linkedDocId && task.linkedDocId !== docId) return false;
+  // Wiele dokumentów na jednym zadaniu jest dozwolone
   return true;
 }
 
@@ -3483,9 +3527,11 @@ function removeWorkflowDependency(fromId, toId) {
 }
 
 function getLinkedDocIdsForPath(path) {
-  return new Set(
-    (path?.tasks || []).map((task) => task.linkedDocId).filter(Boolean)
-  );
+  const set = new Set();
+  (path?.tasks || []).forEach((task) => {
+    normalizeTaskLinkedDocIds(task).forEach((id) => set.add(id));
+  });
+  return set;
 }
 
 /** ——— Workflow working calendar (PL: no Sat/Sun/holidays) ——— */
@@ -5286,25 +5332,27 @@ function flowInstanceTasksAsNodes(project) {
 
   return ordered.map((task) => {
     const sched = schedule.get(task.id) || {};
-    const linkedDoc = task.linkedDocId
-      ? {
-          kind: task.linkedDocId === "building-project" ? "building" : "survey-doc",
-          id: task.linkedDocId,
-          name: titleById.get(task.linkedDocId) || task.linkedDocId,
-        }
-      : null;
+    const linkedDocIds = normalizeTaskLinkedDocIds(task);
+    const linkedDocs = linkedDocIds.map((id) => ({
+      kind: id === "building-project" ? "building" : "survey-doc",
+      id,
+      name: titleById.get(id) || id,
+    }));
+    const linkedDoc = linkedDocs[0] || null;
     return {
       id: task.id,
       name: task.name || "Zadanie",
       parentId: task.parentId || null,
-      kind: linkedDoc ? "doc-create" : "flow",
+      kind: linkedDocs.length ? "doc-create" : "flow",
       source: "flow",
       linkedDoc,
+      linkedDocs,
+      linkedDocIds,
       dependsOn: Array.isArray(task.blockedBy) ? [...task.blockedBy] : [],
       pathKey: null,
       stepKey: null,
       sortOrder: typeof task.sortOrder === "number" ? task.sortOrder : 0,
-      docId: task.linkedDocId || null,
+      docId: linkedDocIds[0] || null,
       depth: task.depth || 0,
       durationDays: task.durationDays,
       flowStartDate: sched.startDate || null,
@@ -5316,15 +5364,23 @@ function flowInstanceTasksAsNodes(project) {
 }
 
 function leafTaskFillPercent(project, task) {
-  if (task.kind !== "doc-create" || !task.linkedDoc) return 0;
-  if (task.linkedDoc.kind === "building") {
-    return getBuildingFormFillPercent(project);
-  }
-  if (task.linkedDoc.kind === "survey-doc") {
-    return countDocFormFill(task.linkedDoc.id, project.docForms?.[task.linkedDoc.id] || {})
-      .percent;
-  }
-  return 0;
+  const docs =
+    Array.isArray(task?.linkedDocs) && task.linkedDocs.length
+      ? task.linkedDocs
+      : task?.linkedDoc
+        ? [task.linkedDoc]
+        : [];
+  if (!docs.length) return 0;
+  const percents = docs.map((linked) => {
+    if (linked.kind === "building" || linked.id === "building-project") {
+      return getBuildingFormFillPercent(project);
+    }
+    if (typeof countDocFormFill === "function") {
+      return countDocFormFill(linked.id, project.docForms?.[linked.id] || {}).percent;
+    }
+    return 0;
+  });
+  return Math.round(percents.reduce((sum, n) => sum + n, 0) / percents.length);
 }
 
 function collectProjectTasks(project) {
@@ -5336,24 +5392,33 @@ function collectProjectTasks(project) {
 
   const flowNodes = flowInstanceTasksAsNodes(synced);
   const customRaw = synced.customTasks || [];
-  const customAsNodes = customRaw.map((task) => ({
+  const customAsNodes = customRaw.map((task) => {
+    const linkedDocs = Array.isArray(task.linkedDocs)
+      ? task.linkedDocs.filter((doc) => doc && doc.id)
+      : task.linkedDoc
+        ? [task.linkedDoc]
+        : [];
+    return {
     id: task.id,
     name: task.name || "Zadanie",
     parentId: task.parentId || null,
-    kind: "custom",
+    kind: linkedDocs.length ? "doc-create" : "custom",
     source: "custom",
-    linkedDoc: task.linkedDoc || null,
+    linkedDoc: linkedDocs[0] || null,
+    linkedDocs,
+    linkedDocIds: linkedDocs.map((doc) => String(doc.id)),
     dependsOn: Array.isArray(task.dependsOn) ? task.dependsOn : [],
     pathKey: null,
     stepKey: null,
     sortOrder: typeof task.sortOrder === "number" ? task.sortOrder : 1000,
-    docId: null,
+    docId: linkedDocs[0]?.id || null,
     typeId: task.typeId || "",
     updatedAt: task.updatedAt || "",
     description: task.description || "",
     flowStartDate: null,
     flowEndDate: null,
-  }));
+  };
+  });
 
   const flowIds = new Set(flowNodes.map((t) => t.id));
   const mergedNodes = [
@@ -5390,12 +5455,17 @@ function collectProjectTasks(project) {
       node.kind === "custom"
         ? getTaskTypes().find((item) => item.id === node.typeId)
         : null;
-    const linked = node.linkedDoc
-      ? {
-          ...node.linkedDoc,
-          name: resolveLinkedDocLabel(synced, node.linkedDoc),
-        }
-      : null;
+    const linkedDocs = (
+      Array.isArray(node.linkedDocs) && node.linkedDocs.length
+        ? node.linkedDocs
+        : node.linkedDoc
+          ? [node.linkedDoc]
+          : []
+    ).map((doc) => ({
+      ...doc,
+      name: resolveLinkedDocLabel(synced, doc) || doc.name || doc.id,
+    }));
+    const linked = linkedDocs[0] || null;
 
     return {
       id: node.id,
@@ -5414,7 +5484,7 @@ function collectProjectTasks(project) {
       dependsOn: Array.isArray(node.dependsOn) ? node.dependsOn : [],
       pathKey: node.pathKey || null,
       stepKey: node.stepKey || null,
-      docId: node.docId || null,
+      docId: linkedDocs[0]?.id || node.docId || null,
       ownerId: getTaskOwnerId(synced, node.id),
       startDate:
         getTaskStartDate(synced, node.id) || node.flowStartDate || "",
@@ -5427,12 +5497,14 @@ function collectProjectTasks(project) {
       status: meta.label,
       statusKey: meta.key,
       progress:
-        node.kind === "doc-create"
+        linkedDocs.length
           ? fill
           : meta.key === doneStatus
             ? 100
             : 0,
       linkedDoc: linked,
+      linkedDocs,
+      linkedDocIds: linkedDocs.map((doc) => String(doc.id)),
       updatedAt: node.updatedAt || synced.updatedAt || synced.createdAt || "",
     };
   });

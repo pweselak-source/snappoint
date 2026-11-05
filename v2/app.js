@@ -354,23 +354,34 @@
       </div>`;
   }
 
+  function getLinkedDocIdsFromTask(task) {
+    if (!task) return [];
+    if (Array.isArray(task.linkedDocIds) && task.linkedDocIds.length) {
+      return [...new Set(task.linkedDocIds.map(String).filter(Boolean))];
+    }
+    if (Array.isArray(task.linkedDocs) && task.linkedDocs.length) {
+      return [
+        ...new Set(
+          task.linkedDocs
+            .map((doc) =>
+              doc?.kind === "building" ? "building-project" : String(doc?.id || "")
+            )
+            .filter(Boolean)
+        ),
+      ];
+    }
+    if (task.linkedDoc?.kind === "building") return ["building-project"];
+    if (task.linkedDoc?.id) return [String(task.linkedDoc.id)];
+    if (task.docId) return [String(task.docId)];
+    return [];
+  }
+
   function findTaskLinkedToDoc(project, docId) {
     const id = String(docId || "");
     if (!id || typeof collectProjectTasks !== "function") return null;
     const tasks = collectProjectTasks(project);
     return (
-      tasks.find((task) => {
-        if (id === "building-project") {
-          return (
-            task.linkedDoc?.kind === "building" ||
-            String(task.linkedDoc?.id || "") === "building-project" ||
-            String(task.docId || "") === "building-project"
-          );
-        }
-        return (
-          String(task.linkedDoc?.id || "") === id || String(task.docId || "") === id
-        );
-      }) || null
+      tasks.find((task) => getLinkedDocIdsFromTask(task).includes(id)) || null
     );
   }
 
@@ -385,11 +396,7 @@
   }
 
   function getLinkedDocIdFromTask(task) {
-    if (!task) return "";
-    if (task.linkedDoc?.kind === "building") return "building-project";
-    if (task.linkedDoc?.id) return String(task.linkedDoc.id);
-    if (task.docId) return String(task.docId);
-    return "";
+    return getLinkedDocIdsFromTask(task)[0] || "";
   }
 
   function expandAncestorsToTask(projectId, taskId) {
@@ -490,6 +497,16 @@
     return ghost;
   }
 
+  function normalizeCustomLinkedDocs(task) {
+    if (Array.isArray(task?.linkedDocs) && task.linkedDocs.length) {
+      return task.linkedDocs.filter((doc) => doc && doc.id);
+    }
+    if (task?.linkedDoc?.id || task?.linkedDoc?.kind === "building") {
+      return [task.linkedDoc];
+    }
+    return [];
+  }
+
   function linkV2DocToTask(projectId, taskId, docId) {
     const pid = String(projectId || "");
     const tid = String(taskId || "");
@@ -508,6 +525,24 @@
         setWorkflowRuntime({ mode: "project", projectId: pid });
       }
       linkWorkflowTaskDocument(tid, did);
+      // Usuń ten dok. też z customTasks innych / tego samego przy przenosinach
+      const latest = getProjectById(pid);
+      if (latest) {
+        persistProject({
+          ...latest,
+          customTasks: (latest.customTasks || []).map((item) => {
+            const docs = normalizeCustomLinkedDocs(item).filter(
+              (doc) => String(doc.id) !== did
+            );
+            return {
+              ...item,
+              linkedDocs: docs,
+              linkedDoc: docs[0] || null,
+            };
+          }),
+          updatedAt: new Date().toISOString(),
+        });
+      }
       return true;
     }
 
@@ -525,11 +560,17 @@
       persistProject({
         ...project,
         customTasks: customTasks.map((item) => {
-          if (String(item.id) === tid) return { ...item, linkedDoc };
-          if (String(item.linkedDoc?.id || "") === did) {
-            return { ...item, linkedDoc: null };
+          let nextDocs = normalizeCustomLinkedDocs(item).filter(
+            (d) => String(d.id) !== did
+          );
+          if (String(item.id) === tid) {
+            if (!nextDocs.some((d) => String(d.id) === did)) nextDocs = [...nextDocs, linkedDoc];
           }
-          return item;
+          return {
+            ...item,
+            linkedDocs: nextDocs,
+            linkedDoc: nextDocs[0] || null,
+          };
         }),
         updatedAt: new Date().toISOString(),
       });
@@ -648,6 +689,19 @@
   /** Karteczka — dokument formalny (szara). */
   function iconFormalDocLink() {
     return `<svg class="v2-task-ico is-formal-link" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.2 5.2h8.4l3.2 3.2V18.8H6.2V5.2Z" fill="currentColor" fill-opacity="0.14" stroke="currentColor" stroke-width="1.45" stroke-linejoin="round"/><path d="M14.6 5.2v3.2h3.2M8.4 11.2h7.2M8.4 14.2h5.2" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+
+  /** Dwie karteczki (bardziej rozstawione) — wiele dokumentów formalnych. */
+  function iconFormalDocLinkMulti() {
+    return `<svg class="v2-task-ico is-formal-link is-multi" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.2 7.4h8.2l2.6 2.6V18.6H3.2V7.4Z" fill="currentColor" fill-opacity="0.12" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/><path d="M10.2 4.4h8.2l2.6 2.6V15.6H10.2V4.4Z" fill="currentColor" fill-opacity="0.1" stroke="currentColor" stroke-width="1.35" stroke-linejoin="round"/><path d="M16.2 4.4v2.6h2.6M5.2 11.4h5M5.2 14.2h3.6" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+
+  function iconPreview() {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="11" cy="11" r="6.2"/><path d="m16.2 16.2 3.3 3.3" stroke-linecap="round"/><path d="M11 8.2v5.6M8.2 11h5.6" stroke-linecap="round"/></svg>`;
+  }
+
+  function iconTreeDrag() {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="9" cy="7" r="1.15" fill="currentColor" stroke="none"/><circle cx="15" cy="7" r="1.15" fill="currentColor" stroke="none"/><circle cx="9" cy="12" r="1.15" fill="currentColor" stroke="none"/><circle cx="15" cy="12" r="1.15" fill="currentColor" stroke="none"/><circle cx="9" cy="17" r="1.15" fill="currentColor" stroke="none"/><circle cx="15" cy="17" r="1.15" fill="currentColor" stroke="none"/></svg>`;
   }
 
   function iconBulkOwner() {
@@ -952,7 +1006,7 @@
       const name = String(input?.value || "").trim();
       if (!name) {
         input?.focus();
-        showV2Toast("Podaj nazwę zadania");
+        showV2Toast("Podaj nazwę");
         return;
       }
       const onSave = v2TaskNameOnSave;
@@ -991,14 +1045,16 @@
     return modal;
   }
 
-  function openV2TaskNameModal({ title, eyebrow, placeholder, onSave }) {
+  function openV2TaskNameModal({ title, eyebrow, placeholder, fieldLabel, onSave }) {
     const modal = ensureV2TaskNameModal();
     v2TaskNameOnSave = typeof onSave === "function" ? onSave : null;
     const titleEl = modal.querySelector('[data-role="v2-task-name-title"]');
     const eyebrowEl = modal.querySelector('[data-role="v2-task-name-eyebrow"]');
     const input = modal.querySelector('[data-role="v2-task-name-input"]');
+    const labelEl = modal.querySelector(".v2-field-label");
     if (titleEl) titleEl.textContent = title || "Nowe zadanie";
     if (eyebrowEl) eyebrowEl.textContent = eyebrow || "Zadanie";
+    if (labelEl) labelEl.textContent = fieldLabel || "Nazwa zadania";
     if (input) {
       input.value = "";
       input.placeholder = placeholder || "np. Projekt budowlany";
@@ -1407,9 +1463,10 @@
     return false;
   }
 
-  function unlinkV2TaskFormalDoc(projectId, taskId) {
+  function unlinkV2TaskFormalDoc(projectId, taskId, docId = null) {
     const pid = String(projectId || "");
     const tid = String(taskId || "");
+    const did = docId ? String(docId) : null;
     if (!pid || !tid || typeof getProjectById !== "function") return false;
     ensureV2ProjectFlow(pid);
     if (typeof setWorkflowRuntime === "function") {
@@ -1421,25 +1478,45 @@
     const inFlow = (project.flowInstance?.tasks || []).some(
       (item) => String(item.id) === tid
     );
-    if (inFlow && typeof linkWorkflowTaskDocument === "function") {
-      linkWorkflowTaskDocument(tid, null);
+    if (inFlow) {
+      if (did && typeof unlinkWorkflowTaskDocument === "function") {
+        unlinkWorkflowTaskDocument(tid, did);
+      } else if (typeof linkWorkflowTaskDocument === "function") {
+        linkWorkflowTaskDocument(tid, null);
+      }
     }
 
     const next = {
       ...getProjectById(pid),
-      customTasks: (getProjectById(pid)?.customTasks || []).map((item) =>
-        String(item.id) === tid ? { ...item, linkedDoc: null } : item
-      ),
+      customTasks: (getProjectById(pid)?.customTasks || []).map((item) => {
+        if (String(item.id) !== tid) return item;
+        if (!did) return { ...item, linkedDoc: null, linkedDocs: [] };
+        const docs = normalizeCustomLinkedDocs(item).filter(
+          (doc) => String(doc.id) !== did
+        );
+        return { ...item, linkedDocs: docs, linkedDoc: docs[0] || null };
+      }),
       updatedAt: new Date().toISOString(),
     };
     if (next.flowInstance?.tasks) {
       next.flowInstance = {
         ...next.flowInstance,
-        tasks: next.flowInstance.tasks.map((item) =>
-          String(item.id) === tid
-            ? { ...item, linkedDocId: null, linkedDoc: null }
-            : item
-        ),
+        tasks: next.flowInstance.tasks.map((item) => {
+          if (String(item.id) !== tid) return item;
+          if (!did) {
+            return { ...item, linkedDocId: null, linkedDocIds: [], linkedDoc: null };
+          }
+          const ids = (
+            typeof normalizeTaskLinkedDocIds === "function"
+              ? normalizeTaskLinkedDocIds(item)
+              : []
+          ).filter((id) => id !== did);
+          return {
+            ...item,
+            linkedDocIds: ids,
+            linkedDocId: ids[0] || null,
+          };
+        }),
         updatedAt: new Date().toISOString(),
       };
     }
@@ -1592,8 +1669,20 @@
             aria-label="Usuń zadanie: ${esc(task.name || "Zadanie")}"
           >×</button>`
         : "";
+      const treeDrag = editable
+        ? `<button
+            type="button"
+            class="v2-task-tree-drag"
+            data-role="v2-task-tree-drag"
+            data-task-id="${esc(task.id)}"
+            title="Przeciągnij, aby zmienić hierarchię"
+            aria-label="Przeciągnij zadanie w hierarchii"
+            draggable="true"
+          >${iconTreeDrag()}</button>`
+        : "";
       return `
         <div class="v2-task-name" style="--v2-task-depth:${depth}">
+          ${treeDrag}
           ${toggle}
           <span class="v2-task-kind-icon" aria-hidden="true">${v2TaskLevelIcon(depth)}</span>
           <button
@@ -1608,19 +1697,24 @@
         </div>`;
     }
     if (colId === "icons") {
-      const linkedDocId = getLinkedDocIdFromTask(task);
-      if (!linkedDocId) return "";
-      const docTitle = resolveV2LinkedDocTitle(project, linkedDocId);
+      const linkedIds = getLinkedDocIdsFromTask(task);
+      if (!linkedIds.length) return "";
+      const titles = linkedIds.map((id) => resolveV2LinkedDocTitle(project, id));
+      const multi = linkedIds.length > 1;
+      const title = multi
+        ? `${linkedIds.length} dokumenty: ${titles.join(", ")}`
+        : titles[0];
       return `
         <span class="v2-task-icons">
           <button
             type="button"
-            class="v2-task-linked-doc"
+            class="v2-task-linked-doc${multi ? " is-multi" : ""}"
             data-role="v2-task-linked-doc"
-            data-doc-id="${esc(linkedDocId)}"
-            title="${esc(docTitle)}"
-            aria-label="Dokument formalny: ${esc(docTitle)}"
-          >${iconFormalDocLink()}</button>
+            data-doc-id="${esc(linkedIds[0])}"
+            data-doc-ids="${esc(linkedIds.join(","))}"
+            title="${esc(title)}"
+            aria-label="${esc(title)}"
+          >${multi ? iconFormalDocLinkMulti() : iconFormalDocLink()}</button>
         </span>`;
     }
     if (colId === "status") {
@@ -2079,12 +2173,32 @@
             </div>`
           : `<div class="v2-gantt-unscheduled" title="Brak dat — ustaw w formularzu zadania">Bez dat</div>`;
 
+        const linkedIds = getLinkedDocIdsFromTask(task);
+        const linkedTitles = linkedIds.map((id) =>
+          resolveV2LinkedDocTitle(project, id)
+        );
+        const linkedMulti = linkedIds.length > 1;
+        const linkedTitle = linkedMulti
+          ? `${linkedIds.length} dokumenty: ${linkedTitles.join(", ")}`
+          : linkedTitles[0] || "";
+        const linkedIcon = linkedIds.length
+          ? `<button
+              type="button"
+              class="v2-task-linked-doc${linkedMulti ? " is-multi" : ""}"
+              data-role="v2-task-linked-doc"
+              data-doc-id="${esc(linkedIds[0])}"
+              data-doc-ids="${esc(linkedIds.join(","))}"
+              title="${esc(linkedTitle)}"
+              aria-label="${esc(linkedTitle)}"
+            >${linkedMulti ? iconFormalDocLinkMulti() : iconFormalDocLink()}</button>`
+          : "";
         return `
           <div
             class="v2-gantt-row${task.hasChildren ? " has-children" : ""}${
               treeHidden ? " is-tree-hidden" : ""
             }"
             data-role="v2-gantt-row"
+            data-task-drop="1"
             data-task-id="${esc(task.id)}"
             data-parent-id="${esc(task.parentId || "")}"
             data-depth="${depth}"
@@ -2103,11 +2217,14 @@
                 <strong>${esc(task.name || "Zadanie")}</strong>
                 <span>${esc(dateLine)}</span>
               </button>
+              ${linkedIcon}
               ${addChild}
               ${deleteBtn}
             </div>
             <div
               class="v2-gantt-track"
+              data-role="v2-task-drop"
+              data-task-id="${esc(task.id)}"
               style="width:${timelineWidth}px;background-size:${dayWidth}px 100%"
             >${barHtml}</div>
           </div>`;
@@ -2538,42 +2655,47 @@
             .join("")
         : `<option value="none">Brak właściciela</option>`;
 
-    const linkedDocId = getLinkedDocIdFromTask(task);
-    const linkedDoc = linkedDocId
-      ? getProjectFormDocuments(project).find(
-          (doc) => String(doc.id) === String(linkedDocId)
-        ) || {
-          id: linkedDocId,
-          title:
-            (typeof resolveLinkedDocLabel === "function" && task.linkedDoc
-              ? resolveLinkedDocLabel(project, task.linkedDoc)
-              : "") ||
-            task.linkedDoc?.name ||
-            "Dokument formalny",
+    const linkedIds = getLinkedDocIdsFromTask(task);
+    const allDocs = getProjectFormDocuments(project);
+    const linkedDocs = linkedIds.map((id) => {
+      const found = allDocs.find((doc) => String(doc.id) === String(id));
+      return (
+        found || {
+          id,
+          title: resolveV2LinkedDocTitle(project, id) || "Dokument formalny",
         }
-      : null;
-    const linkedDocFill = linkedDoc ? getFormalDocFill(project, linkedDoc) : null;
-    const formalHtml = linkedDoc
+      );
+    });
+    const formalHtml = linkedDocs.length
       ? `
         <div class="v2-task-sheet-prop">
-          <span class="v2-task-sheet-prop-label">Dokument</span>
-          <div class="v2-task-sheet-prop-value v2-task-sheet-formal">
-            <button
-              type="button"
-              class="v2-task-sheet-formal-btn"
-              data-role="v2-open-linked-doc"
-              data-doc-id="${esc(String(linkedDoc.id))}"
-            >${esc(linkedDoc.title || "Dokument formalny")}</button>
-            <span class="v2-fill-pct ${v2FillPercentTone(linkedDocFill.percent)}">${
-              linkedDocFill.percent
-            }%</span>
-            <button
-              type="button"
-              class="v2-task-sheet-unlink"
-              data-role="v2-unlink-formal-doc"
-              title="Odepnij dokument formalny"
-              aria-label="Odepnij dokument formalny"
-            >Odepnij</button>
+          <span class="v2-task-sheet-prop-label">Dokumenty formalne</span>
+          <div class="v2-task-sheet-prop-value v2-task-sheet-formal-list">
+            ${linkedDocs
+              .map((linkedDoc) => {
+                const fill = getFormalDocFill(project, linkedDoc);
+                return `
+              <div class="v2-task-sheet-formal">
+                <button
+                  type="button"
+                  class="v2-task-sheet-formal-btn"
+                  data-role="v2-open-linked-doc"
+                  data-doc-id="${esc(String(linkedDoc.id))}"
+                >${esc(linkedDoc.title || "Dokument formalny")}</button>
+                <span class="v2-fill-pct ${v2FillPercentTone(fill.percent)}">${
+                  fill.percent
+                }%</span>
+                <button
+                  type="button"
+                  class="v2-task-sheet-unlink"
+                  data-role="v2-unlink-formal-doc"
+                  data-doc-id="${esc(String(linkedDoc.id))}"
+                  title="Odepnij dokument formalny"
+                  aria-label="Odepnij dokument: ${esc(linkedDoc.title || "")}"
+                >Odepnij</button>
+              </div>`;
+              })
+              .join("")}
           </div>
         </div>`
       : "";
@@ -3170,10 +3292,10 @@
       });
     });
 
-    sheet
-      .querySelector('[data-role="v2-unlink-formal-doc"]')
-      ?.addEventListener("click", async (event) => {
+    sheet.querySelectorAll('[data-role="v2-unlink-formal-doc"]').forEach((btn) => {
+      btn.addEventListener("click", async (event) => {
         event.preventDefault();
+        const docId = String(btn.dataset.docId || "") || null;
         const ok = await confirmV2Dialog({
           title: "Odepnij dokument",
           message: "Czy na pewno chcesz odpiąć dokumentację formalną od tego zadania?",
@@ -3183,7 +3305,7 @@
         });
         if (!ok) return;
         saveV2TaskDetailForm({ silent: true });
-        if (!unlinkV2TaskFormalDoc(projectId, taskId)) {
+        if (!unlinkV2TaskFormalDoc(projectId, taskId, docId)) {
           showV2Toast("Nie udało się odpiąć dokumentu", { tone: "error" });
           return;
         }
@@ -3192,6 +3314,7 @@
         persistV2Route(v2Route);
         remountTasksTab();
       });
+    });
 
     bindV2TaskChecklist(sheet, projectId, taskId);
     bindV2TaskSheetFiles(sheet, projectId, taskId);
@@ -4112,6 +4235,172 @@
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     });
+
+    bindV2GanttFormalDocDrop(root, pid);
+  }
+
+  function bindV2GanttFormalDocDrop(root, projectId) {
+    const pid = String(projectId || "");
+    root.querySelectorAll('[data-role="v2-task-drop"]').forEach((el) => {
+      if (el.dataset.v2GanttDocDropBound === "1") return;
+      el.dataset.v2GanttDocDropBound = "1";
+      el.addEventListener("dragover", (event) => {
+        if (![...event.dataTransfer.types].includes("application/x-v2-formal-doc")) {
+          return;
+        }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        el.classList.add("is-drop-target");
+        el.closest('[data-role="v2-gantt-row"]')?.classList.add("is-drop-target");
+      });
+      el.addEventListener("dragleave", () => {
+        el.classList.remove("is-drop-target");
+        el.closest('[data-role="v2-gantt-row"]')?.classList.remove("is-drop-target");
+      });
+      el.addEventListener("drop", (event) => {
+        if (![...event.dataTransfer.types].includes("application/x-v2-formal-doc")) {
+          return;
+        }
+        event.preventDefault();
+        el.classList.remove("is-drop-target");
+        el.closest('[data-role="v2-gantt-row"]')?.classList.remove("is-drop-target");
+        const docId =
+          event.dataTransfer.getData("application/x-v2-formal-doc") ||
+          event.dataTransfer.getData("text/plain");
+        const taskId = String(el.dataset.taskId || "");
+        if (!docId || !taskId) return;
+        const ok = linkV2DocToTask(pid, taskId, docId);
+        if (!ok) {
+          showV2Toast("Nie udało się powiązać dokumentu");
+          return;
+        }
+        showV2Toast("Powiązano dokument z zadaniem");
+        expandV2TaskNode(pid, taskId);
+        remountTasksTab();
+      });
+    });
+  }
+
+  function ensureV2ListInsertLine(wrap) {
+    let line = wrap.querySelector('[data-role="v2-list-insert-line"]');
+    if (line) return line;
+    line = document.createElement("div");
+    line.className = "v2-list-insert-line";
+    line.dataset.role = "v2-list-insert-line";
+    line.hidden = true;
+    wrap.appendChild(line);
+    return line;
+  }
+
+  function bindV2ListTreeReorder(root, projectId) {
+    const wrap = root.querySelector('[data-role="v2-tasks-table-wrap"]');
+    if (!wrap || !wrap.classList.contains("is-editable")) return;
+    const pid = String(projectId || "");
+    const line = ensureV2ListInsertLine(wrap);
+    let draggingId = "";
+
+    const clearTreeDropUi = () => {
+      line.hidden = true;
+      wrap.querySelectorAll(".v2-task-row.is-tree-dragging, .v2-task-row.is-nest-target, .v2-task-row.is-drop-before, .v2-task-row.is-drop-after").forEach((row) => {
+        row.classList.remove(
+          "is-tree-dragging",
+          "is-nest-target",
+          "is-drop-before",
+          "is-drop-after"
+        );
+        delete row.dataset.dropMode;
+      });
+    };
+
+    root.querySelectorAll('[data-role="v2-task-tree-drag"]').forEach((handle) => {
+      handle.addEventListener("dragstart", (event) => {
+        draggingId = String(handle.dataset.taskId || "");
+        if (!draggingId || !event.dataTransfer) return;
+        event.stopPropagation();
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", draggingId);
+        event.dataTransfer.setData("application/x-v2-task-tree", draggingId);
+        handle.closest(".v2-task-row")?.classList.add("is-tree-dragging");
+      });
+      handle.addEventListener("dragend", () => {
+        draggingId = "";
+        clearTreeDropUi();
+      });
+    });
+
+    root.querySelectorAll(".v2-task-row").forEach((row) => {
+      row.addEventListener("dragover", (event) => {
+        const types = [...(event.dataTransfer?.types || [])];
+        if (!types.includes("application/x-v2-task-tree")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = "move";
+        const targetId = String(row.dataset.taskId || "");
+        if (!targetId || targetId === draggingId) return;
+
+        const rect = row.getBoundingClientRect();
+        const ratio = (event.clientY - rect.top) / Math.max(1, rect.height);
+        let mode = "nest";
+        if (ratio < 0.28) mode = "before";
+        else if (ratio > 0.72) mode = "after";
+        row.dataset.dropMode = mode;
+
+        wrap.querySelectorAll(".v2-task-row").forEach((el) => {
+          el.classList.remove("is-nest-target", "is-drop-before", "is-drop-after");
+        });
+        if (mode === "nest") {
+          row.classList.add("is-nest-target");
+          line.hidden = true;
+        } else {
+          row.classList.add(mode === "before" ? "is-drop-before" : "is-drop-after");
+          const wrapRect = wrap.getBoundingClientRect();
+          const y =
+            mode === "before" ? rect.top - wrapRect.top : rect.bottom - wrapRect.top;
+          line.style.top = `${Math.max(0, y + wrap.scrollTop - 1)}px`;
+          line.hidden = false;
+        }
+      });
+
+      row.addEventListener("dragleave", (event) => {
+        if (row.contains(event.relatedTarget)) return;
+        row.classList.remove("is-nest-target", "is-drop-before", "is-drop-after");
+        delete row.dataset.dropMode;
+      });
+
+      row.addEventListener("drop", (event) => {
+        const types = [...(event.dataTransfer?.types || [])];
+        if (!types.includes("application/x-v2-task-tree")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const taskId =
+          event.dataTransfer.getData("application/x-v2-task-tree") ||
+          event.dataTransfer.getData("text/plain") ||
+          draggingId;
+        const targetId = String(row.dataset.taskId || "");
+        const mode = row.dataset.dropMode || "nest";
+        clearTreeDropUi();
+        if (!taskId || !targetId || taskId === targetId) return;
+        if (typeof moveProjectTask !== "function") {
+          showV2Toast("Przenoszenie niedostępne", { tone: "error" });
+          return;
+        }
+        const moved = moveProjectTask(pid, taskId, { mode, targetId });
+        if (!moved) {
+          showV2Toast(
+            (typeof moveProjectTask.lastError === "string" && moveProjectTask.lastError) ||
+              "Nie udało się przenieść zadania",
+            { tone: "error" }
+          );
+          return;
+        }
+        showV2Toast(
+          mode === "nest"
+            ? "Zadanie stało się podrzędne"
+            : "Zmieniono kolejność w hierarchii"
+        );
+        remountTasksTab();
+      });
+    });
   }
 
   function openV2BulkOwnerModal(projectId) {
@@ -4660,6 +4949,9 @@
         row.classList.remove("is-drop-target");
       });
       row.addEventListener("drop", (event) => {
+        if (![...event.dataTransfer.types].includes("application/x-v2-formal-doc")) {
+          return;
+        }
         event.preventDefault();
         row.classList.remove("is-drop-target");
         const docId =
@@ -4849,6 +5141,7 @@
     });
 
     bindV2TasksTableChrome(root, pid);
+    bindV2ListTreeReorder(root, pid);
 
     root.querySelector('[data-role="v2-flow-export"]')?.addEventListener("click", (event) => {
       event.preventDefault();
@@ -5232,6 +5525,18 @@
             <td class="v2-col-date">${esc(added)}</td>
             <td class="v2-col-actions">
               <span class="v2-actions-row">
+                ${
+                  String(file.mime || "").includes("pdf") || /\.pdf$/i.test(name)
+                    ? `<button
+                  type="button"
+                  class="v2-icon-btn"
+                  data-role="v2-preview-file"
+                  data-file-id="${esc(id)}"
+                  title="Podgląd PDF"
+                  aria-label="Podgląd PDF: ${esc(name)}"
+                >${iconPreview()}</button>`
+                    : ""
+                }
                 <button
                   type="button"
                   class="v2-icon-btn is-danger"
@@ -5450,6 +5755,10 @@
     if (String(doc?.id) === "building-project") {
       return countBuildingFormFill(project);
     }
+    if (isAttachmentsOnlyDoc(doc)) {
+      const n = getDocAttachments(project, doc.id).length;
+      return { filled: n, total: Math.max(1, n), percent: n > 0 ? 100 : 0 };
+    }
     if (typeof countDocFormFill === "function") {
       return countDocFormFill(doc.id, project?.docForms?.[doc.id] || {});
     }
@@ -5464,6 +5773,9 @@
         const title = doc.title || "Dokument";
         const isBuilding = id === "building-project";
         const fill = getFormalDocFill(project, doc);
+        const fillTitle = isAttachmentsOnlyDoc(doc)
+          ? `${fill.filled} załącznik(ów)`
+          : `${fill.filled}/${fill.total} pól`;
         const linkedTask = findTaskLinkedToDoc(project, id);
         const gotoTaskBtn = linkedTask
           ? `<button
@@ -5504,16 +5816,13 @@
             <td class="v2-col-fill">
               <span
                 class="v2-fill-pct ${v2FillPercentTone(fill.percent)}"
-                title="${fill.filled}/${fill.total} pól"
+                title="${esc(fillTitle)}"
               >${fill.percent}%</span>
             </td>
             <td class="v2-col-actions">${actions}</td>
           </tr>`;
       })
       .join("");
-
-    const availableTypes = getAvailableFormTypes(project);
-    const plusDisabled = availableTypes.length === 0;
 
     return `
       <section class="v2-form-section" data-role="v2-project-forms" aria-labelledby="v2-forms-title">
@@ -5535,11 +5844,10 @@
             </button>
             <button
               type="button"
-              class="v2-docs-add-btn${plusDisabled ? " is-disabled" : ""}"
+              class="v2-docs-add-btn"
               data-role="v2-add-custom-form"
-              title="${plusDisabled ? "Wszystkie typy są już na liście" : "Dodaj dokument formalny"}"
-              aria-label="${plusDisabled ? "Brak dostępnych typów" : "Dodaj dokument formalny"}"
-              ${plusDisabled ? "disabled aria-disabled=\"true\"" : ""}
+              title="Dodaj dokument formalny"
+              aria-label="Dodaj dokument formalny"
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path d="M12 5v14M5 12h14" stroke-linecap="round" />
@@ -6469,6 +6777,12 @@
       if (role === "v2-add-form-option") {
         event.preventDefault();
         addFormTypeToProject(target.dataset.docId);
+        return;
+      }
+      if (role === "v2-add-form-custom") {
+        event.preventDefault();
+        closeV2AddFormModal();
+        openV2CustomFormalNameModal(v2Route.projectId);
       }
     });
 
@@ -6489,8 +6803,23 @@
     const body = modal.querySelector('[data-role="v2-add-form-body"]');
     if (!body) return;
 
+    const customOption = `
+      <div>
+        <p class="v2-file-modal-group-label">Własny dokument</p>
+        <div class="v2-file-modal-options">
+          <button
+            type="button"
+            class="v2-file-type-option"
+            data-role="v2-add-form-custom"
+          >
+            <strong>Własny</strong>
+            <span>Nazwij dokument i dołącz załączniki (bez formularza)</span>
+          </button>
+        </div>
+      </div>`;
+
     if (!available.length) {
-      body.innerHTML = `<p class="v2-docs-empty">Wszystkie dostępne typy są już na liście.</p>`;
+      body.innerHTML = `${customOption}<p class="v2-docs-empty">Wszystkie katalogowe typy są już na liście.</p>`;
     } else {
       const groups = new Map();
       available.forEach((doc) => {
@@ -6498,9 +6827,11 @@
         if (!groups.has(group)) groups.set(group, []);
         groups.get(group).push(doc);
       });
-      body.innerHTML = [...groups.entries()]
-        .map(
-          ([group, docs]) => `
+      body.innerHTML =
+        customOption +
+        [...groups.entries()]
+          .map(
+            ([group, docs]) => `
           <div>
             <p class="v2-file-modal-group-label">${esc(group)}</p>
             <div class="v2-file-modal-options">
@@ -6520,11 +6851,61 @@
                 .join("")}
             </div>
           </div>`
-        )
-        .join("");
+          )
+          .join("");
     }
 
     modal.hidden = false;
+  }
+
+  function openV2CustomFormalNameModal(projectId) {
+    const pid = String(projectId || "");
+    if (!pid) return;
+    openV2TaskNameModal({
+      title: "Własny dokument formalny",
+      eyebrow: "Dokumentacja formalna",
+      fieldLabel: "Nazwa dokumentu",
+      placeholder: "np. Opinia geotechniczna",
+      onSave: (name) => addCustomFormalDocument(pid, name),
+    });
+  }
+
+  function addCustomFormalDocument(projectId, title) {
+    const name = String(title || "").trim();
+    if (!name) return;
+    const project =
+      typeof getProjectById === "function" ? getProjectById(projectId) : null;
+    if (!project || typeof persistProject !== "function") return;
+
+    const existing = Array.isArray(project.formalSurvey?.documents)
+      ? project.formalSurvey.documents
+      : [];
+    const now = new Date().toISOString();
+    const id = `custom-${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 7)}`;
+
+    persistProject({
+      ...project,
+      formalSurvey: {
+        ...(project.formalSurvey || { answers: {} }),
+        documents: [
+          ...existing,
+          {
+            id,
+            title: name,
+            source: "custom",
+            attachmentsOnly: true,
+            ruleId: "manual-custom",
+          },
+        ],
+        updatedAt: now,
+      },
+      updatedAt: now,
+    });
+
+    showV2Toast("Dodano własny dokument");
+    mountV2();
   }
 
   function addFormTypeToProject(docId) {
@@ -6584,7 +6965,6 @@
 
     root.querySelector('[data-role="v2-add-custom-form"]')?.addEventListener("click", (event) => {
       event.preventDefault();
-      if (event.currentTarget.disabled) return;
       openV2AddFormModal(projectId);
     });
 
@@ -6885,6 +7265,25 @@
       });
     });
 
+    root.querySelectorAll('[data-role="v2-preview-file"]').forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        const projectId = getDocsProjectId();
+        if (!projectId) return;
+        const project =
+          typeof getProjectById === "function" ? getProjectById(projectId) : null;
+        const file = project?.files?.find(
+          (item) => String(item.id) === String(btn.dataset.fileId)
+        );
+        if (!file) return;
+        if (file.dataUrl && (String(file.mime || "").includes("pdf") || /\.pdf$/i.test(file.name || ""))) {
+          openPdfPreview(file);
+          return;
+        }
+        showV2Toast("Podgląd dostępny dla plików PDF", { tone: "error" });
+      });
+    });
+
     root.querySelectorAll('[data-role="v2-delete-file"]').forEach((btn) => {
       btn.addEventListener("click", (event) => {
         event.preventDefault();
@@ -6967,6 +7366,12 @@
 
   function isBuildingProjectDoc(doc) {
     return String(doc?.id || "") === "building-project";
+  }
+
+  function isAttachmentsOnlyDoc(doc) {
+    if (!doc) return false;
+    if (doc.attachmentsOnly === true) return true;
+    return String(doc.source || "") === "custom";
   }
 
   function v2SectionShell(num, title, subtitle, sectionKey, bodyHtml, extraAttrs = "") {
@@ -7185,20 +7590,97 @@
     ].join("");
   }
 
+  function getDocAttachments(project, docId) {
+    const bag = project?.docAttachments;
+    if (!bag || typeof bag !== "object") return [];
+    return Array.isArray(bag[String(docId)]) ? bag[String(docId)] : [];
+  }
+
+  function docAttachmentsHtml(project, doc) {
+    if (isBuildingProjectDoc(doc)) return "";
+    const files = getDocAttachments(project, doc.id);
+    const rows = files.length
+      ? files
+          .map((file) => {
+            const id = String(file.id || "");
+            const name = file.name || "plik";
+            const isPdf =
+              String(file.mime || "").includes("pdf") ||
+              /\.pdf$/i.test(name);
+            return `
+            <li class="v2-doc-attach-row" data-file-id="${esc(id)}">
+              <span class="v2-doc-attach-name" title="${esc(name)}">${esc(name)}</span>
+              <span class="v2-actions-row">
+                ${
+                  isPdf
+                    ? `<button type="button" class="v2-icon-btn" data-role="v2-doc-attach-preview" data-file-id="${esc(
+                        id
+                      )}" title="Podgląd PDF" aria-label="Podgląd: ${esc(name)}">${iconPreview()}</button>`
+                    : ""
+                }
+                <button type="button" class="v2-icon-btn" data-role="v2-doc-attach-download" data-file-id="${esc(
+                  id
+                )}" title="Pobierz" aria-label="Pobierz: ${esc(name)}">${iconDownload()}</button>
+                <button type="button" class="v2-icon-btn is-danger" data-role="v2-doc-attach-delete" data-file-id="${esc(
+                  id
+                )}" data-file-name="${esc(name)}" title="Usuń" aria-label="Usuń: ${esc(
+              name
+            )}">${iconTrash()}</button>
+              </span>
+            </li>`;
+          })
+          .join("")
+      : `<li class="v2-doc-attach-empty">Brak załączników. Dodaj skan lub PDF dokumentu.</li>`;
+    return `
+      <section class="v2-doc-attach" data-role="v2-doc-attach" aria-label="Załączniki dokumentu">
+        <header class="v2-doc-attach-head">
+          <div>
+            <h3>Załączniki</h3>
+            <p class="v2-doc-work-lead">Dołącz plik (np. skan / PDF), gdy formularz nie jest dostępny lub jako uzupełnienie.</p>
+          </div>
+          <label class="v2-docs-add-btn" title="Dodaj plik" aria-label="Dodaj plik do dokumentu">
+            <input type="file" multiple hidden data-role="v2-doc-attach-input" accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx" />
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke-linecap="round" />
+            </svg>
+          </label>
+        </header>
+        <ul class="v2-doc-attach-list">${rows}</ul>
+      </section>`;
+  }
+
   function docWorkPanelHtml(project, doc) {
     const isBuilding = isBuildingProjectDoc(doc);
+    const attachmentsOnly = isAttachmentsOnlyDoc(doc);
     const fill = isBuilding
       ? countBuildingFormFill(project)
-      : typeof countDocFormFill === "function"
-        ? countDocFormFill(doc.id, project.docForms?.[doc.id] || {})
-        : { filled: 0, total: 0, percent: 0 };
+      : attachmentsOnly
+        ? { filled: 0, total: 0, percent: 0 }
+        : typeof countDocFormFill === "function"
+          ? countDocFormFill(doc.id, project.docForms?.[doc.id] || {})
+          : { filled: 0, total: 0, percent: 0 };
     const sourceLabel = isBuilding
       ? "Formularz formalny · projekt budowlany"
-      : doc.source === "standard"
-        ? "Dokument standardowy"
-        : doc.source === "manual"
-          ? "Dodany ręcznie"
-          : "Dokument warunkowy";
+      : attachmentsOnly || doc.source === "custom"
+        ? "Własny dokument · tylko załączniki"
+        : doc.source === "standard"
+          ? "Dokument standardowy"
+          : doc.source === "manual"
+            ? "Dodany ręcznie"
+            : "Dokument warunkowy";
+    const attachBlock = docAttachmentsHtml(project, doc);
+
+    if (attachmentsOnly) {
+      return `
+      <div class="v2-doc-work" data-role="v2-doc-work" data-project-id="${esc(project.id)}" data-doc-id="${esc(doc.id)}" data-form-kind="attachments-only">
+        <header class="v2-doc-work-head">
+          <h2 class="v2-projects-title">${esc(doc.title || "Dokument")}</h2>
+          <p class="v2-doc-work-meta">${esc(sourceLabel)}</p>
+        </header>
+        ${attachBlock}
+      </div>`;
+    }
+
     const saveBtn =
       typeof formSaveSubmitButtonHtml === "function"
         ? formSaveSubmitButtonHtml()
@@ -7217,18 +7699,26 @@
       : `class="v2-doc-form" data-role="doc-form" data-doc-id="${esc(doc.id)}" autocomplete="off"`;
     const sections = isBuilding ? v2BuildingSectionsHtml(project) : v2DocSectionsHtml(project, doc);
     const heading = isBuilding ? "Sekcje projektu budowlanego" : "Sekcje dokumentu";
+    const hasFormFields = isBuilding || (sections && !sections.includes("Brak szablonu"));
 
     return `
       <div class="v2-doc-work" data-role="v2-doc-work" data-project-id="${esc(project.id)}" data-doc-id="${esc(doc.id)}" data-form-kind="${isBuilding ? "building" : "doc"}">
         <header class="v2-doc-work-head">
           <h2 class="v2-projects-title">${esc(doc.title || "Formularz")}</h2>
-          <p class="v2-doc-work-meta">${esc(sourceLabel)} · ${fill.filled}/${fill.total} pól · ${fill.percent}%</p>
+          <p class="v2-doc-work-meta">${esc(sourceLabel)}${
+            hasFormFields ? ` · ${fill.filled}/${fill.total} pól · ${fill.percent}%` : ""
+          }</p>
         </header>
+        ${attachBlock}
         <section class="v2-doc-work-panel" aria-label="Formularz dokumentu">
           <header class="v2-doc-work-panel-head">
             <div>
               <h3>${esc(heading)}</h3>
-              <p class="v2-doc-work-lead">Rozwiń sekcję, aby wypełnić pola. Asystent AI pomoże uzupełnić dane.</p>
+              <p class="v2-doc-work-lead">${
+                hasFormFields
+                  ? "Rozwiń sekcję, aby wypełnić pola. Asystent AI pomoże uzupełnić dane."
+                  : "Brak pól formularza — możesz dołączyć plik powyżej."
+              }</p>
             </div>
             <div class="v2-section-actions">
               ${wholeAssist}
@@ -7247,11 +7737,15 @@
   function bindDocWorkPanel(root, projectId, docId) {
     const project =
       typeof getProjectById === "function" ? getProjectById(projectId) : null;
+    if (!project) return;
     const isBuilding = String(docId) === "building-project";
     const form = isBuilding
       ? root.querySelector("#buildingProjectForm")
       : root.querySelector(`[data-role="doc-form"][data-doc-id="${docId}"]`);
-    if (!project || !form) return;
+    if (!form) {
+      bindDocAttachments(root, projectId, docId);
+      return;
+    }
 
     form.querySelectorAll('[data-role="assist-field"]').forEach((btn) => {
       btn.addEventListener("click", (event) => {
@@ -7330,6 +7824,187 @@
       if (isBuilding) bindFormSaveChrome(projectId, "building");
       else bindFormSaveChrome(projectId, "doc", docId);
     }
+
+    bindDocAttachments(root, projectId, docId);
+  }
+
+  function persistDocAttachments(projectId, docId, files) {
+    const project =
+      typeof getProjectById === "function" ? getProjectById(projectId) : null;
+    if (!project || typeof persistProject !== "function") return null;
+    const bag = {
+      ...(project.docAttachments && typeof project.docAttachments === "object"
+        ? project.docAttachments
+        : {}),
+      [String(docId)]: files,
+    };
+    return persistProject({
+      ...project,
+      docAttachments: bag,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  async function addDocAttachmentsFromFiles(projectId, docId, fileList) {
+    const project =
+      typeof getProjectById === "function" ? getProjectById(projectId) : null;
+    if (!project) return;
+    const incoming = Array.from(fileList || []);
+    if (!incoming.length) return;
+    const current = getDocAttachments(project, docId).slice();
+    for (const file of incoming) {
+      let dataUrl = "";
+      try {
+        dataUrl = await readFileAsDataUrl(file);
+      } catch (e) {
+        showV2Toast(`Nie udało się odczytać „${file.name}”`, { tone: "error" });
+        continue;
+      }
+      current.push({
+        id: `da-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name || "plik",
+        size: Number(file.size) || 0,
+        mime: file.type || "application/octet-stream",
+        dataUrl,
+        addedAt: new Date().toISOString(),
+      });
+    }
+    persistDocAttachments(projectId, docId, current);
+    mountV2();
+    showV2Toast("Dodano załącznik do dokumentu");
+  }
+
+  function openPdfPreview(file, { title } = {}) {
+    ensurePdfPreviewModal();
+    const modal = document.getElementById("v2PdfPreviewModal");
+    const frame = modal?.querySelector('[data-role="v2-pdf-frame"]');
+    const titleEl = modal?.querySelector('[data-role="v2-pdf-title"]');
+    if (!modal || !frame) return;
+    const name = title || file?.name || "Podgląd PDF";
+    if (titleEl) titleEl.textContent = name;
+    const src =
+      file?.dataUrl ||
+      (file?.mime?.includes("pdf")
+        ? file.dataUrl
+        : null);
+    if (!src) {
+      showV2Toast("Brak danych PDF do podglądu", { tone: "error" });
+      return;
+    }
+    frame.src = src;
+    modal.hidden = false;
+    document.body.classList.add("is-pdf-preview-open");
+    modal.querySelector('[data-role="v2-pdf-close"]')?.focus();
+  }
+
+  function closePdfPreview() {
+    const modal = document.getElementById("v2PdfPreviewModal");
+    const frame = modal?.querySelector('[data-role="v2-pdf-frame"]');
+    if (!modal) return;
+    modal.hidden = true;
+    if (frame) frame.src = "about:blank";
+    document.body.classList.remove("is-pdf-preview-open");
+  }
+
+  function ensurePdfPreviewModal() {
+    let modal = document.getElementById("v2PdfPreviewModal");
+    if (modal) return modal;
+    modal = document.createElement("div");
+    modal.id = "v2PdfPreviewModal";
+    modal.className = "v2-pdf-preview";
+    modal.hidden = true;
+    modal.innerHTML = `
+      <div class="v2-pdf-preview-backdrop" data-role="v2-pdf-close"></div>
+      <div class="v2-pdf-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="v2PdfPreviewTitle">
+        <header class="v2-pdf-preview-head">
+          <h2 id="v2PdfPreviewTitle" data-role="v2-pdf-title">Podgląd PDF</h2>
+          <button type="button" class="v2-pdf-preview-close" data-role="v2-pdf-close" aria-label="Zamknij podgląd (Esc)">×</button>
+        </header>
+        <iframe class="v2-pdf-preview-frame" data-role="v2-pdf-frame" title="Podgląd PDF"></iframe>
+      </div>`;
+    document.body.appendChild(modal);
+    modal.querySelectorAll('[data-role="v2-pdf-close"]').forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        closePdfPreview();
+      });
+    });
+    if (!document.body.dataset.v2PdfEscBound) {
+      document.body.dataset.v2PdfEscBound = "1";
+      document.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        const open = document.getElementById("v2PdfPreviewModal");
+        if (!open || open.hidden) return;
+        event.preventDefault();
+        event.stopPropagation();
+        closePdfPreview();
+      });
+    }
+    return modal;
+  }
+
+  function bindDocAttachments(root, projectId, docId) {
+    root.querySelector('[data-role="v2-doc-attach-input"]')?.addEventListener("change", (event) => {
+      const input = event.target;
+      void addDocAttachmentsFromFiles(projectId, docId, input.files);
+      input.value = "";
+    });
+
+    root.querySelectorAll('[data-role="v2-doc-attach-download"]').forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        const project =
+          typeof getProjectById === "function" ? getProjectById(projectId) : null;
+        const file = getDocAttachments(project, docId).find(
+          (item) => String(item.id) === String(btn.dataset.fileId)
+        );
+        if (!file) return;
+        if (file.dataUrl) {
+          const link = document.createElement("a");
+          link.href = file.dataUrl;
+          link.download = file.name || "plik";
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          return;
+        }
+        if (typeof downloadAttachmentMock === "function") downloadAttachmentMock(file);
+      });
+    });
+
+    root.querySelectorAll('[data-role="v2-doc-attach-preview"]').forEach((btn) => {
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        const project =
+          typeof getProjectById === "function" ? getProjectById(projectId) : null;
+        const file = getDocAttachments(project, docId).find(
+          (item) => String(item.id) === String(btn.dataset.fileId)
+        );
+        if (file) openPdfPreview(file);
+      });
+    });
+
+    root.querySelectorAll('[data-role="v2-doc-attach-delete"]').forEach((btn) => {
+      btn.addEventListener("click", async (event) => {
+        event.preventDefault();
+        const ok = await confirmV2Dialog({
+          title: "Usuń załącznik",
+          message: `Usunąć plik „${btn.dataset.fileName || "plik"}”?`,
+          confirmLabel: "Usuń",
+          cancelLabel: "Anuluj",
+          danger: true,
+        });
+        if (!ok) return;
+        const project =
+          typeof getProjectById === "function" ? getProjectById(projectId) : null;
+        const next = getDocAttachments(project, docId).filter(
+          (item) => String(item.id) !== String(btn.dataset.fileId)
+        );
+        persistDocAttachments(projectId, docId, next);
+        mountV2();
+        showV2Toast("Usunięto załącznik");
+      });
+    });
   }
 
   function projectsTableInnerHtml(projects) {
